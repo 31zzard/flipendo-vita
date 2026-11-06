@@ -1,0 +1,9 @@
+# Your save slot 1 (Lev_Tut2, the flying lesson), loaded from the main menu (nothing is saved). On the broom the mouse steers:
+# it is held turned the whole time so the broom circles (flying straight hits a wall after ~10 s and then shows a steady 30 fps).
+# 2 x 15 s of circling, quit.
+timeout=200
+env=VITA_BENCH=1
+env=HP1_GOD=1
+env=HP1_SKIPCUTS=1
+env=HP1_MOUSE=38:30:0:40
+env=HP1_EXEC=4:@console.MenuBook.SlotPage SetSelectedSlot 1;4.5:@console.MenuBook.SlotPage LoadSelectedSlot;45:@get harry0 Location;62:@get harry0 Rotation;78:exit

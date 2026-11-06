@@ -1,0 +1,10 @@
+# Lev2_Fire1 (the fire seeds for Hagrid) started by --level (save slot 5: your saves stay as they are): where Harry is, when play starts
+timeout=240
+arg=--level=Lev2_Fire1
+arg=--slot=5
+env=VITA_BENCH=1
+env=HP1_GOD=1
+env=HP1_SKIPCUTS=1
+env=HP1_TRACE=harry0
+env=HP1_TRACE_INTERVAL=2
+env=HP1_EXEC=60:@get harry0 Location;90:@get harry0 Location;120:exit

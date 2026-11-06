@@ -1,0 +1,57 @@
+diff --git a/SurrealEngine/Light/LightEffect.cpp b/SurrealEngine/Light/LightEffect.cpp
+index 4aecb120..c3cdd391 100644
+--- a/SurrealEngine/Light/LightEffect.cpp
++++ b/SurrealEngine/Light/LightEffect.cpp
+@@ -132,7 +132,7 @@ void LightEffect::NoneEffect(LightEffectArgs* args)
+ 		shadowmap += 4;
+ 		result += 4;
+ 	}
+-#elif defined(USE_NEON)
++#elif defined(USE_NEON) && defined(__aarch64__)
+ 	float32x4_t vLx0 = vdupq_n_f32(lightLocationX);
+ 	float32x4_t vLy0 = vdupq_n_f32(lightLocationY);
+ 	float32x4_t vLz0 = vdupq_n_f32(lightLocationZ);
+diff --git a/SurrealEngine/Utils/AlignedAlloc.h b/SurrealEngine/Utils/AlignedAlloc.h
+index 2108ccf6..612a7a2e 100644
+--- a/SurrealEngine/Utils/AlignedAlloc.h
++++ b/SurrealEngine/Utils/AlignedAlloc.h
+@@ -1,11 +1,19 @@
+ #pragma once
+ 
+ #include <cstdlib>
++#ifdef __vita__
++#include <malloc.h>
++#endif
+ 
+ inline void* AlignedAlloc(std::size_t alignment, std::size_t size)
+ {
+ #ifdef _MSC_VER
+ 	return _aligned_malloc(size, alignment);
++#elif defined(__vita__)
++	// newlib on the Vita has no std::aligned_alloc; memalign is its aligned allocator,
++	// and its blocks are released with free().
++	alignment = alignment < alignof(void*) ? alignof(void*) : alignment;
++	return memalign(alignment, size);
+ #else
+ 	// std::aligned_alloc requires an alignment accepted by the platform and a
+ 	// size that is an exact multiple of that alignment. Also, macOS refuse
+@@ -25,4 +33,4 @@ inline void AlignedFree(void* data)
+ #else
+ 	std::free(data);
+ #endif
+-}
++}
+\ No newline at end of file
+diff --git a/SurrealEngine/Utils/File.cpp b/SurrealEngine/Utils/File.cpp
+index 3a709765..3f4826a5 100644
+--- a/SurrealEngine/Utils/File.cpp
++++ b/SurrealEngine/Utils/File.cpp
+@@ -430,6 +430,8 @@ std::string OS::executable_path()
+ 	}
+ 
+ 	return std::string(exePath);
++#elif defined(__vita__)
++	return std::string("ux0:data/flipendo/");
+ #else
+ 	#ifndef PROC_EXE_PATH
+ 	#define PROC_EXE_PATH "/proc/self/exe"

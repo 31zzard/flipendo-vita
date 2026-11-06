@@ -1,0 +1,9 @@
+# Lev_Tut2 (the flying lesson) from save slot 1: screenshots of the lighting while the broom circles
+timeout=200
+env=VITA_BENCH=1
+env=HP1_GOD=1
+env=HP1_SKIPCUTS=1
+env=HP1_MOUSE=38:30:0:40
+env=HP1_SHOT_DIR=ux0:data/flipendo
+env=HP1_SHOTS=46,52,58,64
+env=HP1_EXEC=4:@console.MenuBook.SlotPage SetSelectedSlot 1;4.5:@console.MenuBook.SlotPage LoadSelectedSlot;70:exit

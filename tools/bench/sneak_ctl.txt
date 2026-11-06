@@ -1,0 +1,8 @@
+# Lev4_Sneak from save slot 0: Harry's movement mode flags before and after a cast
+timeout=200
+env=HP1_GOD=1
+env=HP1_SKIPCUTS=1
+env=HP1_TRACE=Invisible
+env=HP1_TRACE_INTERVAL=1
+env=HP1_KEYS=44:LeftMouse:1.5
+env=HP1_EXEC=4:@console.MenuBook.SlotPage SetSelectedSlot 0;4.5:@console.MenuBook.SlotPage LoadSelectedSlot;40:@get Invisible bStrafe;40.3:@get Invisible bLockedOnTarget;40.6:@get Invisible bLook;41:@get Invisible BossTarget;41.3:@get Invisible bPlayerCasting;48:@get Invisible bStrafe;48.3:@get Invisible bLockedOnTarget;48.6:@get Invisible bLook;49:@get Invisible bPlayerCasting;52:exit

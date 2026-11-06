@@ -1,0 +1,8 @@
+# The profiling build (slow on purpose) in Lev2_Fire1: standing from the opening's end to 200 s; profile.txt is written every 25 s
+timeout=900
+arg=--level=Lev2_Fire1
+arg=--slot=5
+env=HP1_GOD=1
+env=HP1_SKIPCUTS=1
+env=HP1_EXEC=200:exit
+stall=150

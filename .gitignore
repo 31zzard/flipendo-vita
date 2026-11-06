@@ -1,0 +1,21 @@
+# build outputs
+build/
+build-profile/
+*.vpk
+*.self
+*.elf
+SurrealEngine.pk3
+__pycache__/
+# local files
+profile.txt
+logs/
+tools/.vita_ip
+tools/bench/out/
+*:Zone.Identifier
+*.orig
+# game data never goes in here
+*.u
+*.unr
+*.utx
+*.uax
+*.umx

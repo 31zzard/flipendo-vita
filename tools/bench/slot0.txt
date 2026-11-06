@@ -1,0 +1,8 @@
+# Your save slot 0, loaded from the main menu (loading does not change it; nothing is saved). Then: 15 s standing still,
+# 15 s turning the camera slowly (the same mouse movement every run), quit.
+timeout=200
+env=VITA_BENCH=1
+env=HP1_GOD=1
+env=HP1_SKIPCUTS=1
+env=HP1_MOUSE=62:25:0:15
+env=HP1_EXEC=4:@console.MenuBook.SlotPage SetSelectedSlot 0;4.5:@console.MenuBook.SlotPage LoadSelectedSlot;45:@get harry0 Location;62:@get harry0 Rotation;78:exit

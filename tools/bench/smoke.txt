@@ -1,0 +1,4 @@
+# The pipeline itself: the game starts to the main menu, logs the counter for a while and quits
+timeout=120
+env=VITA_BENCH=1
+env=HP1_EXEC=20:exit

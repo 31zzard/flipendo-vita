@@ -1,0 +1,7 @@
+# Lev4_Sneak from save slot 0: the camera's state and the CameraTriggers (Harry gets boss-fight strafing controls there)
+timeout=200
+env=HP1_GOD=1
+env=HP1_SKIPCUTS=1
+env=HP1_TRACE=harry,PotCam,BaseCam
+env=HP1_TRACE_INTERVAL=3
+env=HP1_EXEC=4:@console.MenuBook.SlotPage SetSelectedSlot 0;4.5:@console.MenuBook.SlotPage LoadSelectedSlot;40:@get CameraTrigger CameraState;40.5:@get CameraTrigger bUseStrafing;41:@get CameraTrigger DirectionActor;41.5:@get CameraTrigger Tag;42:@get harry BossTarget;42.5:@get PotCam CameraType;43:@get PotCam bUseStrafing;43.5:@get harry bStrafe;50:exit

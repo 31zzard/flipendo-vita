@@ -1,0 +1,4 @@
+timeout=200
+env=HP1_GOD=1
+env=HP1_SKIPCUTS=1
+env=HP1_EXEC=4:@console.MenuBook.SlotPage SetSelectedSlot 0;4.5:@console.MenuBook.SlotPage LoadSelectedSlot;40:@get Invisible RotationRate;40.3:@get Invisible GroundSpeed;40.599999999999994:@get Invisible AccelRate;40.89999999999999:@get Invisible AirControl;41.19999999999999:@get Invisible bRotateToDesired;41.499999999999986:@get Invisible DesiredRotation;41.79999999999998:@get Invisible DesiredSpeed;42.09999999999998:@get Invisible MaxDesiredSpeed;42.39999999999998:@get Invisible WalkingPct;42.699999999999974:@get Invisible bIsWalking;42.99999999999997:@get Invisible CameraTurnRate;43.29999999999997:@get Invisible Mass;46:@get PotCam CameraSpeed;46.3:@get PotCam CameraRotSpeed;46.6:@get PotCam RotationRate;47:@get PotCam CameraDistance;47.3:@get PotCam bUseBattleCam;48:exit

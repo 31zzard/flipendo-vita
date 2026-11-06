@@ -1,0 +1,7 @@
+# Lev4_Sneak from save slot 0: screenshots of Harry under the invisibility cloak
+timeout=200
+env=HP1_GOD=1
+env=HP1_SKIPCUTS=1
+env=HP1_SHOT_DIR=ux0:data/flipendo
+env=HP1_SHOTS=45,50
+env=HP1_EXEC=4:@console.MenuBook.SlotPage SetSelectedSlot 0;4.5:@console.MenuBook.SlotPage LoadSelectedSlot;55:exit

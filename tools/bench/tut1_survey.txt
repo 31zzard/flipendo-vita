@@ -1,0 +1,13 @@
+# Lev_Tut1 from its start (the story start --level gives, save slot 5 so the player's saves stay as they are):
+# the opening cutscene skipped, Harry walks forward and turns; positions every second (HP1_TRACE) and the counter every 0.5 s
+timeout=200
+arg=--level=Lev_Tut1
+arg=--slot=5
+env=VITA_BENCH=1
+env=HP1_SKIPCUTS=1
+env=HP1_GOD=1
+env=HP1_TRACE=harry0
+env=HP1_TRACE_INTERVAL=1
+env=HP1_KEYS=20:Up:6,30:Up:6,40:Up:6,50:Up:6
+env=HP1_MOUSE=27:40:0:2,37:-40:0:2,47:60:0:2
+env=HP1_EXEC=18:@get harry0 Location;60:@get harry0 Location;90:exit
