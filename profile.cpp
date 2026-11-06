@@ -68,7 +68,7 @@ __attribute__((no_instrument_function)) static void Dump()
 	}
 	std::sort(found.begin(), found.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
 
-	FILE* file = fopen("ux0:data/flipendo/profile.txt", "a");
+	FILE* file = fopen(VITA_DATA_ROOT "/profile.txt", "a");
 	if (file)
 	{
 		fprintf(file, "dump marker=0x%08x samples=%u\n", (unsigned)((uintptr_t)&VitaProfileMarker & ~1u), (unsigned)total);
@@ -113,7 +113,7 @@ __attribute__((no_instrument_function)) static int SamplerThread(SceSize, void*)
 // 0x40, the highest, to 0xBF, so the engine thread runs a little lower in the profiling build: see vita_main.cpp.)
 __attribute__((no_instrument_function)) int VitaProfileStart()
 {
-	std::remove("ux0:data/flipendo/profile.txt");
+	std::remove(VITA_DATA_ROOT "/profile.txt");
 
 	const int priorities[] = { 0x40, 0x10000100 };
 	SceUID thread = -1;

@@ -3,6 +3,7 @@
 
     vitarun.py find                      look for the Vita on the LAN (port 1338 open); the address goes to tools/.vita_ip
     vitarun.py deploy                    build/flipendo.self -> ux0:app/FLPD00001/eboot.bin (the installed app, files kept)
+                                         (VITA_APP=hp2 in front of any command: the flipendo2 app, FLPD00002, ux0:data/flipendo2)
     vitarun.py run <scenario> [--deploy] run a scenario (tools/bench/<name>.txt), wait for it, fetch the log, summarise
     vitarun.py bench <label> [--deploy]  slot0 + slot1, the numbers appended to tools/bench/results.txt
     vitarun.py summary <log>             the per-segment table of a log made with VITA_BENCH=1
@@ -27,8 +28,12 @@ from concurrent.futures import ThreadPoolExecutor
 HERE = os.path.dirname(os.path.abspath(__file__))
 VITA_DIR = os.path.dirname(HERE)
 IP_FILE = os.path.join(HERE, ".vita_ip")
-TITLE_ID = "FLPD00001"
-DATA = "ux0:data/flipendo"
+# VITA_APP=hp2: Chamber of Secrets, the flipendo2 app (~/flipendo2: build/flipendo2.self, FLPD00002, ux0:data/flipendo2)
+HP2 = os.environ.get("VITA_APP", "") == "hp2"
+TITLE_ID = "FLPD00002" if HP2 else "FLPD00001"
+DATA = "ux0:data/flipendo2" if HP2 else "ux0:data/flipendo"
+SELF = (os.path.join(os.path.dirname(os.path.dirname(VITA_DIR)), "flipendo2", "build", "flipendo2.self") if HP2
+        else os.path.join(VITA_DIR, "build", "flipendo.self"))
 LOGS = os.path.join(os.path.dirname(VITA_DIR), "logs")
 STALL = 60   # seconds without the log growing that end a run (scenario 'stall=')
 
@@ -142,7 +147,7 @@ def delete(remote):
 
 
 def deploy():
-    local = os.path.join(VITA_DIR, "build", "flipendo.self")
+    local = SELF
     cmd("quit " + TITLE_ID)
     time.sleep(2)
     t = time.time()

@@ -45,6 +45,19 @@ def edit(rel, pattern, repl, done_marker):
     print(f"[ok]   {rel}: {n} change(s)")
 
 
+# 0. The app's folder on the memory card is VITA_DATA_ROOT (CMake: ux0:data/flipendo for HP1, ux0:data/flipendo2 for HP2).
+#    Files patched before 2026-11-06 have the HP1 folder written out: changed to the macro (nothing to do on fresh files).
+for rel in ("Utils/File.cpp", "../../knowwonder/KWNativeFont.cpp", "../../knowwonder/KWParticleFX.cpp"):
+    path = os.path.join(root, rel)
+    with open(path, newline='', encoding='utf-8', errors='surrogateescape') as f:
+        text = f.read()
+    new = text.replace('"ux0:data/flipendo/', 'VITA_DATA_ROOT "/').replace('ux0:data/flipendo/render.cfg can', 'render.cfg can')
+    if new != text:
+        with open(path, 'w', newline='', encoding='utf-8', errors='surrogateescape') as f:
+            f.write(new)
+        print(f"[ok]   {rel}: the card folder is VITA_DATA_ROOT")
+
+
 # 1. The NEON code uses 64-bit ARM only intrinsics (vsqrtq_f32, vdivq_f32, vmaxvq_u32).
 #    The Vita is 32-bit ARMv7: use the generic code there.
 edit("Light/LightEffect.cpp",
@@ -56,9 +69,9 @@ edit("Light/LightEffect.cpp",
 #    On the Vita the game lives in a fixed folder.
 edit("Utils/File.cpp",
      r"#else(\s*)#ifndef PROC_EXE_PATH",
-     lambda m: '#elif defined(__vita__)\n\treturn std::string("ux0:data/flipendo/");\n#else'
+     lambda m: '#elif defined(__vita__)\n\treturn std::string(VITA_DATA_ROOT "/");\n#else'
                + m.group(1) + '#ifndef PROC_EXE_PATH',
-     'ux0:data/flipendo/')
+     'return std::string(VITA_DATA_ROOT "/")')
 
 # 3. KWNativeFont.cpp (Flipendo's own file, in src/knowwonder) finds system fonts with fontconfig on Linux.
 #    The Vita has none: use a TrueType font that ships with the port instead.
@@ -72,7 +85,7 @@ VITA_FONT = '''#elif defined(__vita__)
 	// (NotoSans-Regular.ttf from the engine's Resources/noto folder; it covers Latin and Cyrillic).
 	static bool LoadSystemFontFile(const std::string& name, const std::string& language, NativeFontFile& file)
 	{
-		const std::string filename = "ux0:data/flipendo/fonts/NotoSans-Regular.ttf";
+		const std::string filename = VITA_DATA_ROOT "/fonts/NotoSans-Regular.ttf";
 		try
 		{
 			Array<uint8_t> bytes = File::read_all_bytes(filename);
@@ -226,7 +239,7 @@ edit(PARTICLES,
 edit(PARTICLES,
      r"(\t\t// IDA Engine\.dll: \?EmitParticles@AParticleFX@@QAEHM@Z[^\n]*\n(?:\t\t// IDA[^\n]*\n)*\t\tint EmitParticles\(UActor\* a, ParticleSystemState& state, float dt\)\s*\{)",
      lambda m: ('\t\t// vita-particles:helper\n'
-                '\t\t// The Vita is slow, and a spell makes hundreds of particles: ux0:data/flipendo/render.cfg can thin them out\n'
+                '\t\t// The Vita is slow, and a spell makes hundreds of particles: render.cfg can thin them out\n'
                 '\t\t// ("particles=40" emits 40 percent of them). Other platforms always emit all of them.\n'
                 '\t\tfloat ParticleDensity()\n'
                 '\t\t{\n'
@@ -234,7 +247,7 @@ edit(PARTICLES,
                 '\t\t\tstatic float density = []\n'
                 '\t\t\t{\n'
                 '\t\t\t\tfloat value = 1.0f;\n'
-                '\t\t\t\tif (FILE* file = fopen("ux0:data/flipendo/render.cfg", "r"))\n'
+                '\t\t\t\tif (FILE* file = fopen(VITA_DATA_ROOT "/render.cfg", "r"))\n'
                 '\t\t\t\t{\n'
                 '\t\t\t\t\tchar line[256];\n'
                 '\t\t\t\t\twhile (fgets(line, sizeof(line), file))\n'
@@ -4695,5 +4708,56 @@ edit(FREECAM,
      re.escape('#include "VM/Frame.h"\n'),
      lambda m: m.group(0) + '#include <unordered_map> // vita-freecam-inc\n#include <unordered_set>\n',
      'vita-freecam-inc')
+
+
+# 120. Chamber of Secrets (flipendo2, ~/flipendo2): HP2 starts with Game.exe's front end (New Game / Load Game in six save slots,
+#      Options), which Flipendo draws in a SurrealWidgets window. The Vita has no windows: flipendo2's VitaHP2FrontEnd.cpp draws it
+#      on the screen and gives back the same choice (HP2::VitaFrontEnd, weak: the HP1 app links without it). And --saveslot=<n>
+#      (Game.exe's -SAVESLOT=<n> second run, Core.dll's appInit) points the save folder at Slot<n> without the front end, for
+#      automated runs (with --loadgame=0 it loads the slot's save, with --url=PrivetDr.unr it is a new game in it).
+HP2FE = "../../hp2/HP2FrontEnd.cpp"
+edit(HP2FE,
+     re.escape("\t// IDA Game.exe: not exported: _WinMain@16"),
+     lambda m: ("#ifdef __vita__ // vita-hp2-fe-decl\n"
+                "\t// flipendo2's front end (VitaHP2FrontEnd.cpp): false when the player quits\n"
+                "\tbool VitaFrontEnd(bool& newGame, int& slot) __attribute__((weak));\n\n"
+                "\t// Game.exe's -SAVESLOT=<n> (appInit makes SavePath\\Slot<n> the save folder) as --saveslot=<n>, for automated runs\n"
+                "\tbool VitaUseSaveSlot()\n\t{\n"
+                "\t\tint slot = std::atoi(commandline->GetArg(\"\", \"--saveslot\", \"0\").c_str());\n"
+                "\t\tif (slot < 1 || slot > 6)\n\t\t\treturn false;\n"
+                "\t\tfs::path folder = engine->packages->GetSaveFolderPath() / (\"Slot\" + std::to_string(slot));\n"
+                "\t\tstd::error_code ec;\n\t\tfs::create_directories(folder, ec);\n"
+                "\t\tengine->packages->SetSaveFolderPath(folder);\n"
+                "\t\tLogMessage(\"Save Slot Path: \" + folder.string());\n"
+                "\t\treturn true;\n\t}\n#endif\n\n" + m.group(0)),
+     'vita-hp2-fe-decl')
+edit(HP2FE,
+     r"\t\tauto window = std::make_unique<FrontEndWindow>\(\);\n(?:[^\n]*\n)*?\t\twindow\.reset\(\);\n",
+     lambda m: ("#ifdef __vita__ // vita-hp2-fe-call\n"
+                "\t\tbool finished = false, newGame = false;\n\t\tint slot = 0;\n"
+                "\t\tif (VitaFrontEnd)\n\t\t\tfinished = VitaFrontEnd(newGame, slot);\n"
+                "\t\telse\n\t\t\tLogMessage(\"HP2 front end: not in this app\");\n"
+                "#else\n" + m.group(0) + "#endif\n"),
+     'vita-hp2-fe-call')
+edit("Engine.cpp",
+     re.escape("\tif (LaunchInfo.IsHarryPotter2() && LaunchInfo.url.empty() && !HP2::RunFrontEnd())\n"),
+     lambda m: ("#ifdef __vita__ // vita-hp2-saveslot\n"
+                "\tif (LaunchInfo.IsHarryPotter2() && !HP2::VitaUseSaveSlot() && LaunchInfo.url.empty() && !HP2::RunFrontEnd())\n"
+                "#else\n" + m.group(0) + "#endif\n"),
+     'vita-hp2-saveslot')
+edit("../../hp2/HP2.h",
+     re.escape("\tbool RunFrontEnd();\n"),
+     lambda m: m.group(0) + "#ifdef __vita__ // vita-hp2-saveslot-decl\n\tbool VitaUseSaveSlot();\n#endif\n",
+     'vita-hp2-saveslot-decl')
+
+
+# 121. std::filesystem::copy_file makes an empty file on the Vita (newlib): HP2's save picture (Save0.bmp, so the front end showed
+#      no picture) and its persistent actor cache (the hubs as they were at a save) were copied as 0 bytes. VitaFile.h copies.
+for rel in ("../../knowwonder/KWSave.cpp", "../../hp2/HP2Persist.cpp"):
+    edit(rel, r"\bfs::copy_file\(", "VITA_COPY_FILE(", "VITA_COPY_FILE(")
+    edit(rel, r'(#include "Precomp\.h"\n)',
+         lambda m: m.group(1) + ('#ifdef __vita__ // vita-copyfile\n#include "VitaFile.h"\n#define VITA_COPY_FILE VitaCopyFile\n'
+                                 '#else\n#define VITA_COPY_FILE fs::copy_file\n#endif\n'),
+         'vita-copyfile')
 
 PY

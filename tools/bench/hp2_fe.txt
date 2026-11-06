@@ -1,0 +1,9 @@
+# Chamber of Secrets (VITA_APP=hp2): the front end walked through by scripted keys, a picture of every frame
+# (ux0:data/flipendo2/frontend<n>.bmp), then New Game in slot 1; the first level runs a while and the game quits
+timeout=300
+stall=120
+env=VITA_FE_SHOTS=1
+env=VITA_FE_KEYS=down,down,cross,cross,down,right,right,circle,circle,down,cross,circle,cross,cross
+env=HP1_SHOT_DIR=ux0:data/flipendo2
+env=HP1_SHOTS=60,90
+env=HP1_EXEC=100:exit

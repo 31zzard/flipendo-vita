@@ -145,7 +145,7 @@ VitaRenderDevice::~VitaRenderDevice()
 // ux0:data/flipendo/render.cfg: lines "name=value", see VitaRenderDevice.h
 void VitaRenderDevice::LoadSettings()
 {
-	FILE* file = fopen("ux0:data/flipendo/render.cfg", "r");
+	FILE* file = fopen(VITA_DATA_ROOT "/render.cfg", "r");
 	if (file)
 	{
 		char line[256];

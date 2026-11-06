@@ -14,8 +14,8 @@
 
 namespace
 {
-	const char* const FontFile = "ux0:data/flipendo/fonts/NotoSans-Regular.ttf";
-	const char* const ResourceDir = "ux0:data/flipendo/resources/";
+	const char* const FontFile = VITA_DATA_ROOT "/fonts/NotoSans-Regular.ttf";
+	const char* const ResourceDir = VITA_DATA_ROOT "/resources/";
 
 	std::vector<uint8_t> ReadFile(const std::string& filename)
 	{

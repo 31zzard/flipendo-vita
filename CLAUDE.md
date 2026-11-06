@@ -432,3 +432,11 @@ and lighting for far meshes; (3) float ray tracing is NOT wanted (BSP precision)
   (bStrafe, bLockedOnTarget, BossTarget) were normal before the fix; RotationRate of InvisibleHarry 50000 vs Harry 70000 (data).
 - Controller: Vita has no L2/R2; mapping lives in vita_input.cpp and a few edits of sdl2_display_window.cpp.
 - The sound thread (OpenAL, priority 0x40) and a same-priority engine thread made the sound stutter in heavy frames.
+- 2026-11-06: Chamber of Secrets as a second app, ~/flipendo2 (flipendo2.vpk, FLPD00002, ux0:data/flipendo2/hp2). Shared here, not copied:
+  flipendo-vita.cmake (the whole build; CMakeLists.txt only sets the HP1 app's variables), VITA_DATA_ROOT (card folder macro for every
+  file; apply_fixes pass 0 turns old "ux0:data/flipendo/" literals into it), vita_main.cpp (VITA_GAME_FOLDER / VITA_GAME_EXE / VITA_HP2,
+  app0:data/ files installed at the first start), #120 (HP2::RunFrontEnd calls flipendo2's HP2::VitaFrontEnd, weak; --saveslot=<n>),
+  make_livearea.py --hp2, vitarun.py VITA_APP=hp2 (scenario tools/bench/hp2_fe.txt: VITA_FE_KEYS / VITA_FE_SHOTS of the front end).
+  #121: fs::copy_file writes 0 bytes on the Vita (HP2's Save0.bmp was empty, so the front end showed no slot picture; the persistent
+  actor cache too): VitaFile.h's VitaCopyFile in KWSave.cpp and HP2Persist.cpp. First HP2 run with the front end (user): works,
+  PrivetDr ~15 fps outdoors, ~25 indoors. The HP1-tuned paths that are off for HP2 (vis_threads, surface_cache, mesh_lod) are the next look.

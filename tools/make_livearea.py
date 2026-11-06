@@ -4,7 +4,8 @@
 #   sce_sys/icon0.png                         128 x 128   the bubble on the home screen
 #   sce_sys/livearea/contents/bg.png          840 x 500   the LiveArea background
 #   sce_sys/livearea/contents/startup.png     280 x 158   the "start" gate
-# Usage: python3 -I make_livearea.py <repo root> <output folder (vita/sce_sys)>
+# Usage: python3 -I make_livearea.py <repo root> <output folder (vita/sce_sys)> [--hp2]
+#   --hp2: Chamber of Secrets (~/flipendo2/sce_sys): a green sky and a gold "II"
 
 import os
 import struct
@@ -110,11 +111,14 @@ def paste(dst, img, ox, oy):
 			d[2] = d[2] * (1 - t) + b * t
 
 
+HP2 = False
+
+
 def purple(w, h, seed):
-	"""Deep purple like the icon's disc, lighter in the middle, a few blue sparkles"""
+	"""Deep purple like the icon's disc, lighter in the middle, a few blue sparkles (HP2: deep green)"""
 	cx, cy = w * 0.5, h * 0.45
 	maxd = math.hypot(w * 0.6, h * 0.6)
-	inner, outer = (52, 22, 110), (14, 6, 40)
+	inner, outer = ((18, 86, 52), (3, 22, 12)) if HP2 else ((52, 22, 110), (14, 6, 40))
 
 	def fill(x, y):
 		t = min(math.hypot(x - cx, y - cy) / maxd, 1.0)
@@ -137,6 +141,29 @@ def purple(w, h, seed):
 						for i, c in enumerate((120, 220, 255)):
 							p[i] = p[i] * (1 - k) + c * k
 	return dst
+
+
+def badge(dst, ox, oy, size):
+	"""A gold Roman "II" (two bars between a top and a bottom bar), outlined in dark green, size pixels high"""
+	pixels, dw, dh = dst
+	bar, gap, serif = size * 0.17, size * 0.2, size * 0.13
+	width = bar * 2 + gap + serif * 2
+	shapes = [(ox, oy, width, serif), (ox, oy + size - serif, width, serif),
+	          (ox + serif, oy, bar, size), (ox + serif + bar + gap, oy, bar, size)]
+	edge = max(size * 0.05, 1.0)
+
+	def inside(x, y, grow):
+		return any(sx - grow <= x < sx + sw + grow and sy - grow <= y < sy + sh + grow for sx, sy, sw, sh in shapes)
+	for y in range(int(oy - edge) - 1, int(oy + size + edge) + 2):
+		for x in range(int(ox - edge) - 1, int(ox + width + edge) + 2):
+			if not (0 <= x < dw and 0 <= y < dh):
+				continue
+			p = pixels[y * dw + x]
+			if inside(x + 0.5, y + 0.5, 0):
+				t = (y - oy) / size
+				p[0], p[1], p[2] = 250 - 40 * t, 214 - 50 * t, 120 - 60 * t
+			elif inside(x + 0.5, y + 0.5, edge):
+				p[0], p[1], p[2] = 10, 30, 16
 
 
 def quantize_write(dst, path):
@@ -218,14 +245,18 @@ def quantize_write(dst, path):
 
 
 def main():
+	global HP2
 	root, out = sys.argv[1], sys.argv[2]
+	HP2 = '--hp2' in sys.argv[3:]
 	branding = os.path.join(root, 'images', 'branding')
 	icon = read_png(os.path.join(branding, 'flipendo-icon.png'))
 	logo = read_png(os.path.join(branding, 'flipendo-logo-dark.png'))
 
 	# The bubble: the icon over the colour of its own disc's rim (the Vita masks the bubble to a circle)
-	dst = canvas(128, 128, lambda x, y: (24, 10, 62))
+	dst = canvas(128, 128, lambda x, y: (6, 40, 22) if HP2 else (24, 10, 62))
 	paste(dst, resize(icon, 128, 128), 0, 0)
+	if HP2:
+		badge(dst, 80, 78, 34)
 	quantize_write(dst, os.path.join(out, 'icon0.png'))
 
 	# The LiveArea: the logo on the purple sky
@@ -233,13 +264,17 @@ def main():
 	lw = 700
 	lh = round(logo[1] * lw / logo[0])
 	paste(dst, resize(logo, lw, lh), (840 - lw) // 2, 120)
+	if HP2:
+		badge(dst, 380, 140 + lh, 90)
 	quantize_write(dst, os.path.join(out, 'livearea', 'contents', 'bg.png'))
 
 	# The gate: the logo alone
 	dst = purple(280, 158, 3)
 	lw = 256
 	lh = round(logo[1] * lw / logo[0])
-	paste(dst, resize(logo, lw, lh), (280 - lw) // 2, (158 - lh) // 2)
+	paste(dst, resize(logo, lw, lh), (280 - lw) // 2, (158 - lh) // 2 - (14 if HP2 else 0))
+	if HP2:
+		badge(dst, 124, (158 + lh) // 2 - 10, 26)
 	quantize_write(dst, os.path.join(out, 'livearea', 'contents', 'startup.png'))
 
 

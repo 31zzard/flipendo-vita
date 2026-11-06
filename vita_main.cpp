@@ -1,9 +1,11 @@
-// Entry point of the Vita build: Harry Potter and the Philosopher's Stone only. Like the Android port's SDL_main, it starts
-// the engine through GameApp with fixed arguments (no launcher): the game folder, the log file and the renderer are given here.
+// Entry point of the Vita apps: Harry Potter and the Philosopher's Stone (flipendo.vpk) and Chamber of Secrets (flipendo2.vpk,
+// ~/flipendo2, VITA_HP2). Like the Android port's SDL_main, it starts the engine through GameApp with fixed arguments: the game
+// folder, the log file and the renderer are given here. (HP2's own front end, New Game / Load Game, runs inside the engine:
+// HP2::RunFrontEnd -> flipendo2's VitaHP2FrontEnd.cpp.)
 //
-// Folder layout on the memory card (ux0:data/flipendo/):
-//   hp1/                    Harry Potter and the Philosopher's Stone, the installed PC game (System, Maps, Textures, Sounds, Music, ...)
-//                           (game/ as before still works when there is no hp1/)
+// Folder layout on the memory card (VITA_DATA_ROOT: ux0:data/flipendo/, HP2 ux0:data/flipendo2/):
+//   hp1/ (hp2/)             the installed PC game (System, Maps, Textures, Sounds, Music, ...)
+//                           (HP1: game/ as before still works when there is no hp1/)
 //   fonts/NotoSans-Regular.ttf
 //   SurrealEngine.pk3       the engine's resources (a zip of src/engine/Resources)
 //   flipendo.log            the engine's log (the previous run is overwritten)
@@ -42,8 +44,8 @@ extern "C"
 
 namespace
 {
-	const char* const Root = "ux0:data/flipendo";
-	std::string gameFolder;   // the HP1 folder the engine thread starts
+	const char* const Root = VITA_DATA_ROOT;
+	std::string gameFolder;   // the game's folder the engine thread starts
 
 	bool FolderExists(const std::string& path)
 	{
@@ -53,7 +55,7 @@ namespace
 
 	void Log(const char* text)
 	{
-		FILE* file = fopen("ux0:data/flipendo/vita-main.log", "a");
+		FILE* file = fopen(VITA_DATA_ROOT "/vita-main.log", "a");
 		if (file)
 		{
 			fputs(text, file);
@@ -110,6 +112,46 @@ namespace
 		return result;
 	}
 
+	bool CopyFile(const std::string& from, const std::string& to)
+	{
+		FILE* in = fopen(from.c_str(), "rb");
+		if (!in)
+			return false;
+		FILE* out = fopen(to.c_str(), "wb");
+		bool ok = out != nullptr;
+		static char buffer[64 * 1024];
+		size_t n;
+		while (ok && (n = fread(buffer, 1, sizeof(buffer), in)) > 0)
+			ok = fwrite(buffer, 1, n, out) == n;
+		fclose(in);
+		if (out && fclose(out) != 0)
+			ok = false;
+		if (!ok)
+			std::remove(to.c_str());
+		return ok;
+	}
+
+	// Files the VPK brings along (app0:data/, VITA_BUNDLED_FILES in flipendo-vita.cmake): copied to the card folder at the
+	// first start, so that only the game itself has to be copied by hand
+	void InstallBundledFiles()
+	{
+		const struct { const char* name; const char* dest; } files[] = {
+			{ "SurrealEngine.pk3", "SurrealEngine.pk3" },
+			{ "NotoSans-Regular.ttf", "fonts/NotoSans-Regular.ttf" },
+			{ "render.cfg", "render.cfg" },
+		};
+		for (const auto& f : files)
+		{
+			const std::string from = std::string("app0:data/") + f.name;
+			const std::string to = std::string(Root) + "/" + f.dest;
+			if (FolderExists(to) || !FolderExists(from))
+				continue;
+			if (std::string(f.dest).find('/') != std::string::npos)
+				sceIoMkdir((std::string(Root) + "/fonts").c_str(), 0777);
+			Log(((CopyFile(from, to) ? "installed " : "could not install ") + to).c_str());
+		}
+	}
+
 	// The engine runs UnrealScript on a recursive interpreter. The system's main thread has a small stack,
 	// so the engine gets a thread of its own with a large one.
 	int EngineThread(SceSize, void*)
@@ -143,7 +185,9 @@ namespace
 			Array<std::string> args;
 			args.push_back("--autolaunch");
 			args.push_back("--skip-splash");
-			args.push_back("--skip-intro");
+#ifndef VITA_HP2
+			args.push_back("--skip-intro");   // HP1's New Game storybook
+#endif
 			args.push_back("--fps=30");
 			args.push_back(std::string("--logfile=") + Root + "/flipendo.log");
 			for (const std::string& a : extraArgs)
@@ -181,16 +225,20 @@ int main(int, char**)
 
 	sceIoMkdir("ux0:data", 0777);
 	sceIoMkdir(Root, 0777);
-	std::remove("ux0:data/flipendo/vita-main.log");
+	std::remove(VITA_DATA_ROOT "/vita-main.log");
 	Log((std::string("flipendo: main started, build ") + __DATE__ + " " + __TIME__).c_str());
 	Log(("clocks: CPU " + std::to_string(cpuMhz) + " MHz, bus " + std::to_string(busMhz) + " MHz, GPU " + std::to_string(gpuMhz) + " MHz").c_str());
 
-	// The game: hp1/, or game/ as in the first builds
-	gameFolder = std::string(Root) + "/hp1";
+	InstallBundledFiles();
+
+	// The game: hp1/ (hp2/), or for HP1 game/ as in the first builds
+	gameFolder = std::string(Root) + "/" VITA_GAME_FOLDER;
+#ifndef VITA_HP2
 	if (!FolderExists(gameFolder + "/System") && FolderExists(std::string(Root) + "/game/System"))
 		gameFolder = std::string(Root) + "/game";
-	if (!FolderExists(gameFolder + "/System/HP.exe"))
-		Log(("no System/HP.exe in " + gameFolder + ": copy the PC game to ux0:data/flipendo/hp1/").c_str());
+#endif
+	if (!FolderExists(gameFolder + "/" VITA_GAME_EXE))
+		Log(("no " VITA_GAME_EXE " in " + gameFolder + ": copy the PC game to " + Root + "/" VITA_GAME_FOLDER "/").c_str());
 	Log(("game: " + gameFolder).c_str());
 
 	// In the profiling build the engine runs a little below the sampler (priority 0x40 is the highest a user thread may have)

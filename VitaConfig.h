@@ -4,6 +4,11 @@
 // Read on every call, so use it where that is rare (map changes), not every frame.
 
 #ifdef __vita__
+// The app's folder on the memory card: ux0:data/flipendo (HP1), ux0:data/flipendo2 (HP2). Set by CMake for every file
+// (flipendo-vita.cmake); this default is for files compiled without it.
+#ifndef VITA_DATA_ROOT
+#define VITA_DATA_ROOT "ux0:data/flipendo"
+#endif
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
@@ -12,7 +17,7 @@
 inline int VitaConfigInt(const char* wanted, int defaultValue)
 {
 	int result = defaultValue;
-	if (FILE* file = fopen("ux0:data/flipendo/render.cfg", "r"))
+	if (FILE* file = fopen(VITA_DATA_ROOT "/render.cfg", "r"))
 	{
 		char line[256];
 		while (fgets(line, sizeof(line), file))
