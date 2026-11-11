@@ -1,6 +1,6 @@
 # build outputs
 build/
-build-profile/
+build-*/
 *.vpk
 *.self
 *.elf
@@ -10,6 +10,8 @@ __pycache__/
 profile.txt
 logs/
 tools/.vita_ip
+tools/.deployed_*
+.srcsums
 tools/bench/out/
 *:Zone.Identifier
 *.orig

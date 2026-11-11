@@ -1,0 +1,8 @@
+# Lev2_HogFront: VenomousTent2's script (Tick in its states), WingardiumBlock.Tick, Harry.ViewFlash
+timeout=200
+stall=60
+arg=--level=Lev2_HogFront
+arg=--slot=5
+env=HP1_GOD=1
+env=HP1_SKIPCUTS=1
+env=HP1_EXEC=50:@script VenomousTent2 Tick;51:@script WingardiumBlock Tick;52:@script Harry ViewFlash;53:@get VenomousTent20 StateName;54:@script VenomousTent2 impartInformation;55:@script Snail Tick;56:exit

@@ -1,0 +1,11 @@
+# Lev_Tut3: Harry in front of the Alohomora mirror (Mirror1), shots before and after it opens
+timeout=150
+stall=200
+arg=--level=Lev_Tut3
+arg=--slot=5
+env=VITA_BENCH=1
+env=HP1_GOD=1
+env=HP1_SKIPCUTS=1
+env=HP1_SHOT_DIR=ux0:data/flipendo
+env=HP1_SHOTS=26,38,38.4
+env=HP1_EXEC=20:@teleport -2850 -11300 800;20.2:@set Harry1 Rotation (Pitch=0,Yaw=16384,Roll=0);20.4:@set Harry1 ViewRotation (Pitch=0,Yaw=16384,Roll=0);28:@trigger Mirror1;45:exit

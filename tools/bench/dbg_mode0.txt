@@ -1,0 +1,7 @@
+# Title menu with render.cfg debug_mode=0 (RCFG override), screenshot
+timeout=60
+stall=200
+env=RCFG_debug_mode=0
+env=HP1_SHOT_DIR=ux0:data/flipendo
+env=HP1_SHOTS=6
+env=HP1_EXEC=8:exit

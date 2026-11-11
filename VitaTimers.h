@@ -6,6 +6,10 @@
 
 #ifdef __vita__
 #include <psp2/kernel/processmgr.h>
+#include <malloc.h>
+#include "VitaConfig.h"
+#include "Utils/Logger.h"
+#include <cstdio>
 #include <string>
 #include <unordered_map>
 
@@ -40,6 +44,7 @@ namespace VitaTimers
 		Mods,          // HP1::TickMods
 		ViewFlash,     // the ViewFlash event and CalcView (camera scripts)
 		LoopRest,      // the clock, localtime, dxRootWindow
+		EntryTick,     // the entry level's tick (#125: every entry_tick_rate frames)
 		TexUpdate,     // procedural textures (water, wet, fire, ice) worked out again (UTexture::Update), wherever they are drawn
 		Count
 	};
@@ -77,16 +82,27 @@ namespace VitaTimers
 		}
 	}
 
+	// render.cfg heap_probe=1 (a leak hunt, slow): the heap's growth inside each section (mallinfo before and after), logged as
+	// 'heap growth by section' (KB per log period; nested sections count in their parents too)
+	inline int heapProbe = -1;
+	inline long long heapGrowth[Count] = {};
+	inline long long HeapInUse() { struct mallinfo info = mallinfo(); return (long long)info.uordblks; }
+
 	struct Scope
 	{
 		Section section;
 		double start;
+		long long heapStart = 0;
 		explicit Scope(Section s) : section(s), start(enabled ? Now() : 0.0)
 		{
 			calls[s]++;
 			totalCalls[s]++;
 			if (s == DrawGame)
 				frameNumber++;
+			if (heapProbe < 0)
+				heapProbe = VitaConfigInt("heap_probe", 0) != 0 ? 1 : 0;
+			if (heapProbe)
+				heapStart = HeapInUse();
 		}
 		~Scope()
 		{
@@ -95,6 +111,17 @@ namespace VitaTimers
 				const double t = Now() - start;
 				ms[section] += t;
 				total[section] += t;
+			}
+			if (heapProbe)
+			{
+				const long long grew = HeapInUse() - heapStart;
+				heapGrowth[section] += grew;
+				if (grew > 1024 * 1024 && (section == LevelTick || section == ConsoleTick || section == DrawGame || section == Audio))
+				{
+					char text[96];
+					snprintf(text, sizeof(text), "heap_probe: section %d grew %lld KB in one call (frame %u)", (int)section, grew / 1024, frameNumber);
+					LogMessage(text);
+				}
 			}
 		}
 	};

@@ -490,6 +490,8 @@ bool VisibleFrame::VitaProcessParallel(const Array<PortalSpan>& portalSpans, con
 
 bool VisibleFrame::VitaReplayBox(BspNode* node)
 {
+	if (vitaReplaySource == 1) // #212: the view log
+		return VitaViewReplayBox(node);
 	const int n = (int)(node - engine->Level->Model->Nodes.data());
 	for (int i = 0; i < VitaVis::Strips; i++)
 	{
@@ -501,6 +503,8 @@ bool VisibleFrame::VitaReplayBox(BspNode* node)
 
 int VisibleFrame::VitaReplayActor(BspNode* node, int k, UActor* actor)
 {
+	if (vitaReplaySource == 1) // #212: actors are tested live
+		return -1;
 	const int n = (int)(node - engine->Level->Model->Nodes.data());
 	bool visible = false;
 	for (int i = 0; i < VitaVis::Strips; i++)
@@ -518,6 +522,8 @@ int VisibleFrame::VitaReplayActor(BspNode* node, int k, UActor* actor)
 
 bool VisibleFrame::VitaReplaySurface(BspNode* node)
 {
+	if (vitaReplaySource == 1) // #212: the view log
+		return VitaViewReplaySurface(node);
 	const int n = (int)(node - engine->Level->Model->Nodes.data());
 	bool visible = false;
 	for (int i = 0; i < VitaVis::Strips; i++)
@@ -532,6 +538,8 @@ bool VisibleFrame::VitaReplaySurface(BspNode* node)
 
 Array<PortalSpan> VisibleFrame::VitaReplayPortal(BspNode* node)
 {
+	if (vitaReplaySource == 1) // #212: the view log
+		return VitaViewReplayPortal(node);
 	const int n = (int)(node - engine->Level->Model->Nodes.data());
 	Array<PortalSpan> spans;
 	for (int i = 0; i < VitaVis::Strips; i++)

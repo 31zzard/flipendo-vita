@@ -1,0 +1,10 @@
+# Grandstaircase_hub by --url (new game, slot 6): heap growth by section while the camera turns (heap_probe), @memory at the end
+timeout=300
+stall=120
+arg=--saveslot=6
+arg=--url=Grandstaircase_hub.unr
+env=VITA_BENCH=1
+env=RCFG_heap_probe=1
+env=HP1_KEYS=16:Enter:0.2,20:Enter:0.2,24:Enter:0.2
+env=HP1_MOUSE=30:25:0:40
+env=HP1_EXEC=10:@memory;72:@memory;74:exit

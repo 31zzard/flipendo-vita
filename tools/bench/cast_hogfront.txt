@@ -1,0 +1,15 @@
+# Lev2_HogFront: standing, then aiming (left mouse held 6 s) and casting (release), twice; probes, ticks by class, script profile
+timeout=260
+stall=40
+arg=--level=Lev2_HogFront
+arg=--slot=5
+env=VITA_BENCH=1
+env=RCFG_probes=1
+env=RCFG_script_profile=1
+env=RCFG_slow_frame_ms=80
+env=RCFG_probe_every=1
+env=RCFG_section_timers=1
+env=HP1_GOD=1
+env=HP1_SKIPCUTS=1
+env=HP1_KEYS=70:01:8,88:01:8
+env=HP1_EXEC=60:@get harry0 Location;70:@get harry0 Rotation;78:@get harry0 Health;88:@get harry0 Rotation;96:@get harry0 Health;104:exit

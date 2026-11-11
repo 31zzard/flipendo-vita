@@ -1,0 +1,4 @@
+# Where HP1's menus and console read bDebugMode
+timeout=120
+stall=40
+env=HP1_EXEC=12:@script HPMenu.FEMainPage Created;12:@script HPMenu.FEMainPage ShowWindow;12:@script HPMenu.FEMainPage BeforePaint;12:@script HPMenu.FEMainPage PreSwitchPage;12:@script HPMenu.HPConsole HarryDebugModeOn;14:exit

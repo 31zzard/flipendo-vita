@@ -1,0 +1,8 @@
+# The menu book's scripts (how pages change), dumped in Lev_Tut1
+timeout=150
+stall=40
+arg=--level=Lev_Tut1
+arg=--slot=5
+env=HP1_GOD=1
+env=HP1_SKIPCUTS=1
+env=HP1_EXEC=40:@script HPMenu.FEBook EscFromConsole;40:@script HPMenu.FEBook ChangePageNamed;40:@script HPMenu.FEBook OpenBook;40:@script HPMenu.FEBook ChangePage;40:@script HPMenu.FEReportPage Notify;40:@script HPMenu.FEMainPage Notify;42:exit

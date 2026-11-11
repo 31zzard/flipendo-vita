@@ -1,0 +1,9 @@
+# hp2_willow save: 15 s standing, then 24 s walking back and forth (Up / Down, 4 s each), quit. The player's own cost while moving.
+timeout=260
+stall=90
+arg=--saveslot=5
+arg=--loadgame=0
+env=VITA_BENCH=1
+env=RCFG_script_profile=1
+env=HP1_KEYS=30:Enter:0.2,55:Up:4,59:Down:4,63:Up:4,67:Down:4,71:Up:4,75:Down:4
+env=HP1_EXEC=40:@get harry Location;55:@get Harry0 Rotation;79:exit

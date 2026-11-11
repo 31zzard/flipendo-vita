@@ -1,0 +1,8 @@
+# Mouse sensitivity kept across a level change: set on harry0 in Lev_Tut1, travel to Lev2_HogFront, read it there
+timeout=240
+stall=60
+arg=--level=Lev_Tut1
+arg=--slot=5
+env=HP1_GOD=1
+env=HP1_SKIPCUTS=1
+env=HP1_EXEC=30:@set harry0 MouseSensitivity 2.4;31:@get harry0 MouseSensitivity;35:@travel Lev2_HogFront;120:@get harry MouseSensitivity;122:exit

@@ -1,0 +1,10 @@
+# HP1 level changes (apply_fixes #146, the old level let go): Lev2_Fire1 -> Lev_Tut1 -> Lev2_Fire1 -> Lev_Tut1, the heap at each LoadMap
+timeout=1200
+stall=200
+arg=--level=Lev2_Fire1
+arg=--slot=5
+env=VITA_BENCH=1
+env=HP1_GOD=1
+env=HP1_SKIPCUTS=1
+env=HP1_MOUSE=50:25:0:5,100:25:0:5,150:25:0:5
+env=HP1_EXEC=40:@travel Lev_Tut1;90:@travel Lev2_Fire1;140:@travel Lev_Tut1;180:@memory;182:exit

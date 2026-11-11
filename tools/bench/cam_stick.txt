@@ -1,0 +1,11 @@
+# Camera turn rate with the real right stick (the host presses it: vitacompanion 'press right-stick 255 128'); sticks are live
+# (no VITA_BENCH); the camera's rotation is traced
+timeout=100
+stall=200
+arg=--level=Lev_Tut1
+arg=--slot=5
+env=HP1_GOD=1
+env=HP1_SKIPCUTS=1
+env=HP1_TRACE=PotCam
+env=HP1_TRACE_INTERVAL=0.25
+env=HP1_EXEC=20:@get harry0 MouseSensitivity;60:exit

@@ -1,0 +1,8 @@
+# HUD scripts in Lev3_Intro
+timeout=200
+stall=50
+arg=--level=Lev3_Intro
+arg=--slot=5
+env=HP1_GOD=1
+env=HP1_SKIPCUTS=1
+env=HP1_EXEC=50:@script HPHud DrawHealth;50:@script HPHud DrawHudItems;50:@script HPHud DrawIconMessages;50:@script HPHud HUDSetup;50:@script HPHud DrawCutSceneBoarder;50:@script HPHud DrawCountdown;50:@script HPHud DrawEnemyHealth;50:@script HPHud DrawPopup;52:exit

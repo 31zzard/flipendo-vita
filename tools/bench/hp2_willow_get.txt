@@ -1,0 +1,7 @@
+# hp2_willow: properties of the beans (do they ever settle?), no timing
+timeout=200
+stall=90
+arg=--saveslot=5
+arg=--loadgame=0
+env=HP1_KEYS=30:Enter:0.2
+env=HP1_EXEC=36:@get BlueJellyBean1 fBounceIntoPlaceTimeout;36.1:@get BlueJellyBean1 Location;36.2:@get BlueJellyBean1 Velocity;44:@get BlueJellyBean1 fBounceIntoPlaceTimeout;44.1:@get BlueJellyBean1 Location;44.2:@get BlueJellyBean1 Velocity;44.3:@get BlueJellyBean1 Physics;44.4:@script BlueJellyBean1 BeginState;44.6:@script BlueJellyBean1 Timer;45:exit

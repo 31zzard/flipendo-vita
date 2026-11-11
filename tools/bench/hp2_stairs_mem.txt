@@ -1,0 +1,6 @@
+# Grandstaircase_hub by --url (new game, slot 6): where the heap goes (@memory), no travel
+timeout=260
+stall=120
+arg=--saveslot=6
+arg=--url=Grandstaircase_hub.unr
+env=HP1_EXEC=12:@memory;14:exit

@@ -1,0 +1,7 @@
+# hp2_willow: the Tick functions of the classes the level tick spends on (@script), no timing
+timeout=200
+stall=90
+arg=--saveslot=5
+arg=--loadgame=0
+env=HP1_KEYS=30:Enter:0.2
+env=HP1_EXEC=40:@script console KeyEvent;40.5:@script UWindow.UWindowRootWindow DrawMouse;41:@script console RenderUWindow;41.5:@script console PostRender;42:exit

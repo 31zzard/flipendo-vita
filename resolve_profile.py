@@ -5,7 +5,7 @@ Usage (in WSL):  ./resolve_profile.py profile.txt ~/flipendo/vita/build-profile/
 """
 import re
 import subprocess
-import sys
+import os, sys
 from collections import defaultdict
 
 if len(sys.argv) != 3:
@@ -44,6 +44,6 @@ for number, dump in enumerate(dumps, 1):
         per_function[name] += c
     total = dump["samples"] or 1
     print("=== dump %d: %d samples (about %d ms of the engine thread) ===" % (number, dump["samples"], dump["samples"]))
-    for name, count in sorted(per_function.items(), key=lambda x: -x[1])[:30]:
+    for name, count in sorted(per_function.items(), key=lambda x: -x[1])[:int(os.environ.get("TOP", "30"))]:
         print("%5.1f%%  %s" % (100.0 * count / total, name[:130]))
     print()

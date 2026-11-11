@@ -1,0 +1,7 @@
+# the player's EntryHall_Hub save (Slot4 copy): travel to Grandstaircase_hub as a door does; does the heap hold?
+timeout=300
+stall=150
+arg=--saveslot=4
+arg=--loadgame=0
+env=HP1_KEYS=30:Enter:0.2
+env=HP1_EXEC=36:@memory;38:@travel Grandstaircase_hub;70:@memory;75:exit

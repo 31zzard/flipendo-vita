@@ -1,0 +1,12 @@
+# Lev_Tut1: playing 10 s, then the pause menu (REPORT), OPTIONS, FOLIO, 12 s each, with probes and the script profile
+timeout=200
+stall=40
+arg=--level=Lev_Tut1
+arg=--slot=5
+env=VITA_BENCH=1
+env=RCFG_probes=1
+env=RCFG_script_profile=1
+env=RCFG_section_timers=1
+env=HP1_GOD=1
+env=HP1_SKIPCUTS=1
+env=HP1_EXEC=30:@get harry0 Location;40:@console.MenuBook OpenBook REPORT;52:@console.MenuBook ChangePageNamed OPTIONS;64:@console.MenuBook ChangePageNamed FOLIO;76:exit

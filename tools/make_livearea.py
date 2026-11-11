@@ -6,6 +6,8 @@
 #   sce_sys/livearea/contents/startup.png     280 x 158   the "start" gate
 # Usage: python3 -I make_livearea.py <repo root> <output folder (vita/sce_sys)> [--hp2]
 #   --hp2: Chamber of Secrets (~/flipendo2/sce_sys): a green sky and a gold "II"
+#   --from <folder>: the three pictures made elsewhere as full colour PNGs of those sizes (icon0.png, bg.png, startup.png;
+#   make_livearea_cover.ps1 makes them from the game's cover and icon): only turned into palette PNGs
 
 import os
 import struct
@@ -244,9 +246,22 @@ def quantize_write(dst, path):
 	print(f'{path}: {w}x{h}, {len(png)} bytes')
 
 
+def from_folder(src, out):
+	"""Full colour PNGs made elsewhere -> the Vita's palette PNGs"""
+	for name, rel in (('icon0.png', 'icon0.png'), ('bg.png', os.path.join('livearea', 'contents', 'bg.png')),
+					  ('startup.png', os.path.join('livearea', 'contents', 'startup.png'))):
+		w, h, px = read_png(os.path.join(src, name))
+		dst = canvas(w, h, lambda x, y: (0, 0, 0))
+		paste(dst, (w, h, px), 0, 0)
+		quantize_write(dst, os.path.join(out, rel))
+
+
 def main():
 	global HP2
 	root, out = sys.argv[1], sys.argv[2]
+	if '--from' in sys.argv[3:]:
+		from_folder(sys.argv[sys.argv.index('--from') + 1], out)
+		return
 	HP2 = '--hp2' in sys.argv[3:]
 	branding = os.path.join(root, 'images', 'branding')
 	icon = read_png(os.path.join(branding, 'flipendo-icon.png'))

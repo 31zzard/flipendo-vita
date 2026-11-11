@@ -1,0 +1,9 @@
+# the player's EntryHall_Hub save (Slot4 copy), one door: which objects outside keep the old level's objects (level_release_why)
+timeout=600
+stall=200
+arg=--saveslot=4
+arg=--loadgame=0
+env=VITA_BENCH=1
+env=RCFG_level_release_why=1
+env=HP1_KEYS=30:Enter:0.2
+env=HP1_EXEC=36:@travel Grandstaircase_hub;40:exit

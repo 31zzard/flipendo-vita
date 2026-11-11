@@ -1,0 +1,10 @@
+# Left stick: in the pause menu it moves the cursor (t 25-45), in the game it walks (after 45); the host pushes the real stick
+timeout=200
+stall=300
+arg=--level=Lev_Tut1
+arg=--slot=5
+env=HP1_GOD=1
+env=HP1_SKIPCUTS=1
+env=HP1_SHOT_DIR=ux0:data/flipendo
+env=HP1_SHOTS=30,42
+env=HP1_EXEC=25:@console.MenuBook OpenBook REPORT;45:@console.MenuBook CloseBook;48:@get harry0 Location;70:@get harry0 Location;75:exit

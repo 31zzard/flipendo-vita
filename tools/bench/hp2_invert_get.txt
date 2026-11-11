@@ -1,0 +1,7 @@
+# hp2_willow: the Tick functions of the classes the level tick spends on (@script), no timing
+timeout=200
+stall=90
+arg=--saveslot=5
+arg=--loadgame=0
+env=HP1_KEYS=30:Enter:0.2
+env=HP1_EXEC=40:@get Harry0 bInvertMouse;41:exit

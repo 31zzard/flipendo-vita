@@ -1,0 +1,9 @@
+# Profiling build (VITA_BUILD=build-profile): Lev2_Fire1 with the camera turning the whole time, for profile.txt
+timeout=600
+stall=90
+arg=--level=Lev2_Fire1
+arg=--slot=5
+env=HP1_GOD=1
+env=HP1_SKIPCUTS=1
+env=HP1_MOUSE=60:12:0:300
+env=HP1_EXEC=330:exit

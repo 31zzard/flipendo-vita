@@ -1,0 +1,11 @@
+# Camera turn rate: a full right stick is ~30 raw counts a frame at 30 fps (vita_input.cpp CameraSpeed 900/s); 2 s of it,
+# camera / Harry rotation read before and after
+timeout=120
+stall=40
+arg=--level=Lev_Tut1
+arg=--slot=5
+env=VITA_BENCH=1
+env=HP1_GOD=1
+env=HP1_SKIPCUTS=1
+env=HP1_MOUSE=40:30:0:2
+env=HP1_EXEC=30:@get harry0 MouseSensitivity;39:@get BaseCam Rotation;39:@get harry0 Rotation;42.5:@get BaseCam Rotation;42.5:@get harry0 Rotation;50:exit

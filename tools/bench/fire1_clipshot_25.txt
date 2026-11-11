@@ -1,0 +1,11 @@
+# Lev2_Fire1: a screenshot at 60 s standing and at 80 s after turning (the sky): sky_zone_walk A/B
+timeout=200
+arg=--level=Lev2_Fire1
+arg=--slot=5
+env=HP1_GOD=1
+env=HP1_SKIPCUTS=1
+env=HP1_MOUSE=62:60:0:6
+env=HP1_SHOT_DIR=ux0:data/flipendo
+env=HP1_SHOTS=60,66,70
+env=HP1_EXEC=72:exit
+env=RCFG_clipper_scale=25

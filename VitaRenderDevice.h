@@ -5,6 +5,20 @@
 #include <vector>
 #include <cstdint>
 #include "VitaHash.h"
+#include <memory>
+#include <new>
+#include <utility>
+
+// An allocator whose resize() leaves new elements uninitialised (plain structs written at once afterwards): the batch's resize
+// zeroed every vertex first, one more pass over memory that the Vita's CPU reads and writes at only ~0.4 GB/s (#127)
+template <class T> struct VitaNoInitAlloc : std::allocator<T>
+{
+	template <class U> struct rebind { using other = VitaNoInitAlloc<U>; };
+	VitaNoInitAlloc() = default;
+	template <class U> VitaNoInitAlloc(const VitaNoInitAlloc<U>&) {}
+	template <class U> void construct(U* p) noexcept { ::new ((void*)p) U; }
+	template <class U, class... A> void construct(U* p, A&&... a) { ::new ((void*)p) U(std::forward<A>(a)...); }
+};
 
 namespace VitaGL { struct Texture; class Queue; }
 
@@ -32,6 +46,9 @@ namespace VitaGL { struct Texture; class Queue; }
 //   device_timing=0        1 measures the time inside the renderer's draw calls (the 'device' figure in the log): slows it down
 //   section_timers=1       0 turns off the timing of the engine's parts (the 'engine parts' figures): a little faster
 //   vsync=1                0 does not wait for the screen's refresh: no rounding of the frame time up, but tearing is possible
+//   fps_lock=60            the frame rate cap: 60 (default; frames of 16.7 or 33.3 ms as they come) or 30 (the game at an even 30 fps,
+//                          two refreshes a frame; menus stay at 60). Only these two
+//   (debug_mode=0/1        HP1's debug mode, Level Select etc.: vita_main.cpp VitaGameDebug)
 //   surface_batching=1     plain level surfaces are drawn together (by texture, and all lightmaps from a few big textures):
 //                          far fewer draw calls. 0 = every surface drawn at once, as before
 //   atlas_pages=8          how many 512x512 lightmap textures there may be
@@ -64,6 +81,8 @@ public:
 	void DrawComplexSurface(SceneNode* Frame, SurfaceInfo& Surface, SurfaceFacet& Facet) override;
 	void DrawGouraudPolygon(SceneNode* Frame, TextureInfo& Info, const GouraudVertex* Pts, int NumPts, uint32_t PolyFlags) override;
 	void DrawGouraudTriangles(SceneNode* Frame, TextureInfo& Info, const GouraudVertex* Pts, int NumTriangles, uint32_t PolyFlags) override;
+	float* VitaBeginTriangles(SceneNode* Frame, TextureInfo& Info, uint32_t PolyFlags, int maxVerts, float* params) override;
+	void VitaEndTriangles(int usedVerts) override;
 	void DrawTile(SceneNode* Frame, TextureInfo& Info, float X, float Y, float XL, float YL, float U, float V, float UL, float VL, float Z, vec4 Color, vec4 Fog, uint32_t PolyFlags) override;
 	void Draw3DLine(SceneNode* Frame, vec4 Color, uint32_t LineFlags, vec3 P1, vec3 P2) override;
 	void Draw2DLine(SceneNode* Frame, vec4 Color, uint32_t LineFlags, vec3 P1, vec3 P2) override;
@@ -103,6 +122,7 @@ private:
 		bool heartbeat = false;
 		bool sectionTimers = true;   // time the engine's parts (the log's 'engine parts' and SLOW FRAME lines); each is two system calls
 		bool vsync = true;           // wait for the screen's refresh: smoother, but a frame is always a multiple of 16.7 ms long
+		int fpsLock = 60;            // 30: in the game every frame two refreshes long (even pacing), 60: as fast as vsync allows
 		int atlasPages = 8;
 		bool atlasDirect = true;
 		bool deviceTiming = false;   // time every draw call (a system call each: slows the polygons down; for measuring only)
@@ -227,7 +247,8 @@ private:
 	bool batchOpen = false;
 	BatchKey batchKey;
 	struct BatchVertex { float x, y, z; float u, v; float r, g, b, a; };   // 36 bytes
-	std::vector<BatchVertex> batchVerts;
+	std::vector<BatchVertex, VitaNoInitAlloc<BatchVertex>> batchVerts;
+	size_t appendFirst = 0;   // VitaBeginTriangles: where the caller's vertices start
 
 	// Plain level surfaces (opaque, with a lightmap) are collected and drawn together at the next flush: the textures in batches by
 	// texture, the lightmaps in batches by atlas page (all lightmaps live in a few big textures). Order is kept: anything else that is
@@ -264,6 +285,8 @@ private:
 		int page = -1, x = 0, y = 0;    // where it is in the atlas, with a border of one texel
 		int generation = -1;
 		bool stale = false;             // the picture changed through the texture path: the atlas copy is old
+		uint8_t uploads = 0;            // pictures uploaded: the engine's float copy is given back after the first only (a light map
+		                                // built again, by a dynamic light, would make it again every time: a malloc on a full heap)
 	};
 	std::unordered_map<uint64_t, LightmapPixels, VitaHash64> lightmaps;   // by CacheID
 	bool PlaceInPage(AtlasPage& page, int width, int height, int& x, int& y);
@@ -339,6 +362,7 @@ private:
 	std::vector<float> uv1;
 	std::vector<float> uv2;
 	std::vector<float> uv3;
+	std::vector<float> vertexColors;   // a translucent surface's light, read from its light map at each vertex (DrawComplexSurface)
 
 	int width = 0;
 	int height = 0;

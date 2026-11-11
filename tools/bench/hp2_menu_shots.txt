@@ -1,0 +1,10 @@
+# hp2_willow save: the in-game menu (Escape) opened, the mouse (the stick's raw moves) moved, pictures: is there a cursor?
+timeout=200
+stall=90
+arg=--saveslot=5
+arg=--loadgame=0
+env=HP1_KEYS=30:Enter:0.2,40:Escape:0.2
+env=HP1_MOUSE=46:20:10:2
+env=HP1_SHOT_DIR=ux0:data/flipendo2
+env=HP1_SHOTS=44,50
+env=HP1_EXEC=56:exit

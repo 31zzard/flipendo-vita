@@ -1,0 +1,8 @@
+# hp2_willow with an actor dump at 40 s (classes and counts), no timing
+timeout=200
+stall=90
+arg=--saveslot=5
+arg=--loadgame=0
+env=HP1_KEYS=30:Enter:0.2
+env=HP1_DUMP=40
+env=HP1_EXEC=45:exit

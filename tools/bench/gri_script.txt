@@ -1,0 +1,9 @@
+# Lev3_Intro: GameReplicationInfo's script (why 0.65 ms a frame)
+timeout=200
+stall=60
+arg=--level=Lev3_Intro
+arg=--slot=5
+env=HP1_GOD=1
+env=HP1_SKIPCUTS=1
+env=HP1_EXEC=50:@bench GameReplicationInfo Timer 200;51:@bench Harry Vec 5000;54:exit
+env=RCFG_vm_laps=1

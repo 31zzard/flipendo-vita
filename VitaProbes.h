@@ -91,6 +91,62 @@ namespace VitaProbes
 		DecalAttach,    // UDecal::AttachDecal, all of it (#117)
 		DecalTrace,     //   of which the trace (Collision.TraceDecal)
 		DecalDetach,    // UDecal::DetachDecal
+		PfxUpdate,      // KW::DrawParticleSystem (#126): UpdateParticleSystem, the system's simulation where it is drawn
+		PfxSetup,       //   texture, light colour
+		PfxDraw,        //   the passes (one DrawGouraudPolygon per particle)
+		PfxCount,       //   (not timed) particles in the systems drawn: calls = particles
+		KeepCopy,       // VitaRenderDevice::FlushPolygons: gl->Keep (the batch's vertices copied for the GL thread); calls = KB
+		EmptySkip,      // (not timed) Frame::Call of an empty script function skipped (#129): calls = skips
+		FastOp,         // (not timed) native operators called without a Frame (#130): calls = calls
+		PfxBounce,      // KW::UpdateParticle (#132): the bounce check of a particle with Elasticity (the level trace), per particle step
+		NoiseAll,       // UActor::MakeNoise (#136), all of it
+		NoiseHear,      //   CanHearNoise of every other pawn (calls = pawns asked)
+		NoiseEvent,     //   the HearNoise events
+		RestSkip,       // (not timed) PHYS_Falling of a resting bouncer skipped (#139): calls = skips
+		VmSetup,        // (vm_laps=1, #141) Frame::Call of a script function: the frame made and the arguments stored
+		VmRun,          //   Frame::Run
+		VmFinish,       //   the result and out parameters, the frame dropped
+		VmStatements,   //   (not timed) statements run: calls = statements
+		EvEnabled,      // (vm_laps=1, #145) VitaCallEvent: IsEventEnabled
+		EvChecks,       //   the actor / level checks
+		EvFind,         //   FindEventFunction
+		EvCall,         //   Frame::Call
+		TickGuard,      // (not timed) script calls answered by the guard prefix (#142): calls = calls
+		PfxDevice,      //   of the draw: the DrawGouraudPolygon calls (a probe: two clock readings each, ~1.4 us)
+		SkySort,        // DrawPortals (sky frame): the portal spans sorted
+		SkyProcess,     //   the sky frame's Process
+		SkyDraw,        //   its Draw and ClearZ
+		PortalSetup,    // VisibleFrame::Process of a portal (sky/mirror) frame: SetupSceneFrame
+		PortalClipper,  //   Clipper.Setup with the portal's spans
+		PortalZone,     //   FindZoneAt and the lists cleared
+		PortalShadows,  //   UpdateActorShadows
+		PortalWalk,     //   the BSP walk
+		MeshMats,       // KW::DrawSkeletalMesh (faces on three cores): the materials looked at (a loop over every face)
+		MeshFacesRun,   //   the three parts of the face loop (VitaJobs::Run)
+		PrepassSetup,   // the mesh prepass: the jobs set up on the main thread
+		PrepassJoin,    //   the main thread joining the workers and waiting for them (FinishAsync)
+		PrepassStore,   //   the results stored (skin cache, faces)
+		SetupLod,       // prepass setup of one mesh: LOD and the skin cache test
+		SetupAnim,      //   the pose (ApplyAnim on the main thread, or the worker's preparations)
+		SetupLight,     //   mesh-to-world and SetupMeshLighting
+		SetupFaces,     //   the faces' materials, fog and textures (#174)
+		SetupBuffers,   //   the job's buffers sized
+		ShadowBone,     // VitaShadowSkip: the owner's first bone (BonePos)
+		ShadowMoved,    //   the native Update of a shadow whose owner moved (detach, move, AttachDecal)
+		CheckPrimBrush, // check: actor primitives that are brushes (movers: their BSP)
+		ClipProject,    // VitaCheckPolygon: points projected and clipped
+		ClipEdges,      //   the edges walked into the lines' extents
+		ClipSpans,      //   DrawSpan per line
+		ModA, ModB, ModC, ModD, ModE, ModF, ModG, ModH, ModI, ModJ, // HP1::TickMods, each mod (#183)
+		JobAnim, JobSkin, JobNormals, JobLight, JobFaces,  // a prepass job on its thread (timed there, added up on the main thread)
+		OldFacesTransl, OldFacesWeapon, OldFacesNoJob,     // (not timed) DrawSkeletalMesh's own face loop, by why: calls = meshes
+		LmRSetup, LmRStaticAll, LmRStaticKept, LmRDynamic, LmRConvert,   // a light map built again (#200): setup, static lights made / loaded, dynamic, to RGBA
+		MeshLightSee,   // KW::SetupMeshLighting's 'does the light see the actor' level line checks (#206)
+		MeshLightCand,  //   (not timed) its candidate lights: calls = candidates
+		MeshLightPick,  //   the candidates' sort and the picking loop
+		MeshLightBegin, //   its BeginFrame (once a frame: the lights' snapshot, the grid, the flicker table)
+		MeshLightRest,  //   SetupMeshLighting as a whole
+		MLBFlicker, MLBSnapshot, MLBFill, MLBGrid,   //   BeginFrame's steps: flicker table, the lights' list, their locations/radii, the grid
 		Count
 	};
 
@@ -111,9 +167,11 @@ namespace VitaProbes
 		"light begin: actor scan", "light begin: tree", "light begin: dirty maps",
 		"check: world", "check: actors", "check: hash query", "check: actor primitives",
 		"shadows: Update events", "shadows: skip test",
-		"decal: attach", "decal: attach trace", "decal: detach"
+		"decal: attach", "decal: attach trace", "decal: detach",
+		"particles: update", "particles: setup", "particles: draw", "particles: count", "polygons: keep copy (calls = KB)", "script: empty calls skipped", "script: operators without a frame", "particles: bounce trace", "noise: MakeNoise", "noise: CanHearNoise", "noise: HearNoise events", "physics: resting bouncers skipped", "vm: setup", "vm: run", "vm: finish", "vm: statements", "event: enabled", "event: checks", "event: find", "event: call", "script: guard prefix answered", "particles: device calls", "sky: sort spans", "sky: process", "sky: draw", "portal frame: setup", "portal frame: clipper setup", "portal frame: zone", "portal frame: shadows", "portal frame: walk", "mesh faces mt: materials", "mesh faces mt: run", "prepass: setup", "prepass: join", "prepass: store", "prepass setup: lod/skin test", "prepass setup: pose", "prepass setup: light", "prepass setup: faces", "prepass setup: buffers", "shadow: bone", "shadow: moved", "check: brush primitives", "clip: project", "clip: edges", "clip: spans", "mod: loading hold", "mod: launch skips", "mod: level start", "mod: storybook", "mod: discord", "mod: path fixes", "mod: spell lesson", "mod: improved movement", "mod: free camera", "mod: frame limit", "job: pose", "job: skinning", "job: normals", "job: vertex light", "job: faces", "old faces: translucent pass", "old faces: other light actor", "old faces: no prepared faces", "lm build: setup", "lm build: static lights made", "lm build: static lights kept", "lm build: dynamic lights", "lm build: convert", "mesh light: sees the actor", "mesh light: candidates", "mesh light: sort and pick", "mesh light: BeginFrame", "mesh light: SetupMeshLighting", "light begin2: flicker", "light begin2: list", "light begin2: locations", "light begin2: grid"
 	};
 
+	inline unsigned exprCounts[128] = {};   // (vm_laps=1) expression nodes run, by ExpressionType: the 'expressions' log line
 	inline bool enabled = true;      // timing this frame (only one frame in SampleEvery: each reading of the clock costs ~0.7 us)
 	inline bool wanted = true;       // render.cfg probes
 	enum { SampleEvery = 8 };
@@ -131,9 +189,22 @@ namespace VitaProbes
 		unsigned calls = 0;
 		double eventUs = 0.0;     // of which the script Tick event (#95)
 		double physicsUs = 0.0;   // and TickPhysics
+		long long heapBytes = 0;  // heap_probe=1: the heap's growth in this class's ticks (#138)
 	};
 	inline ClassTime* currentClass = nullptr;   // the class whose actor is being ticked (ULevel::TickActor, probes on)
 	inline std::unordered_map<const void*, ClassTime> classTimes;
+
+	// render.cfg script_profile=1 (#135): every script function's time, inclusive (Frame::Call; native operators not counted),
+	// logged as 'script functions by time' (the biggest 16 of the log period)
+	struct FuncTime
+	{
+		std::string name;
+		double us = 0.0;
+		unsigned calls = 0;
+	};
+	inline int scriptProfile = -1;
+	inline int vmLaps = -1;   // render.cfg vm_laps=1 (#141)
+	inline std::unordered_map<const void*, FuncTime> funcTimes;
 
 	inline unsigned long long clipTris = 0, clipSpans = 0;   // the clipper's triangles and spans drawn, per log period
 

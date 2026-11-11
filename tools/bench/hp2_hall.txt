@@ -1,0 +1,10 @@
+# Chamber of Secrets: the player's Slot1 save of 07 Nov (EntryHall_Hub, ~10 fps for the user) copied to Slot4 (Slot1 untouched),
+# loaded without the front end. Enter in case a cutscene runs; 15 s standing, 15 s turning, 10 s turning while looking up, quit.
+timeout=300
+stall=120
+arg=--saveslot=4
+arg=--loadgame=0
+env=VITA_BENCH=1
+env=HP1_KEYS=30:Enter:0.2
+env=HP1_MOUSE=55:25:0:15,70:20:-6:10
+env=HP1_EXEC=40:@get Harry Location;55:@get Harry Rotation;70:@get Harry ViewRotation;80:@memory;81:exit

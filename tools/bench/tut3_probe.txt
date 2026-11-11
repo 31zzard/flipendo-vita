@@ -1,0 +1,8 @@
+# Lev_Tut3: where are the Wingardium blocks and the charms lesson
+timeout=200
+stall=50
+arg=--level=Lev_Tut3
+arg=--slot=5
+env=HP1_GOD=1
+env=HP1_SKIPCUTS=1
+env=HP1_EXEC=45:@get WingardiumBlock Location;45:@get WingardiumBlock eVulnerableToSpell;45:@get harry0 Location;45:@get CutScene61 Location;45:@get SpellLearnTrigger Location;45:@get SpellLearnTrigger Tag;45:@get CutScene61 Tag;47:exit

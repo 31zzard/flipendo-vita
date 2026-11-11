@@ -1,0 +1,9 @@
+# the player's EntryHall_Hub save (Slot4 copy): a chain of level changes, the heap and the objects by package between them
+timeout=1500
+stall=200
+arg=--saveslot=4
+arg=--loadgame=0
+env=VITA_BENCH=1
+env=RCFG_level_release_why=1
+env=HP1_KEYS=30:Enter:0.2
+env=HP1_EXEC=36:@travel Grandstaircase_hub;80:@travel Entryhall_hub;125:@travel Grandstaircase_hub;170:@travel Entryhall_hub;215:@travel Grandstaircase_hub;260:@travel Entryhall_hub;300:@memory;302:exit

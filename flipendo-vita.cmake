@@ -53,6 +53,7 @@ add_library(SurrealCoreVita STATIC
 	${CMAKE_CURRENT_LIST_DIR}/stubs.cpp
 	${CMAKE_CURRENT_LIST_DIR}/VitaSpellLesson.cpp   # spell lessons: touch drawing and stick rails
 	${CMAKE_CURRENT_LIST_DIR}/VitaShadows.cpp       # actor shadows: the Update event only when needed
+	${CMAKE_CURRENT_LIST_DIR}/VitaScriptNatives.cpp  # script functions done natively (GameReplicationInfo.Timer)
 	${CMAKE_CURRENT_LIST_DIR}/VitaOverlay.cpp       # the on-screen frame counter (render.cfg overlay)
 	${CMAKE_CURRENT_LIST_DIR}/RenderDeviceVita.cpp   # the engine's RenderDevice.cpp with a Vita-only factory
 	${CMAKE_CURRENT_LIST_DIR}/VitaRenderDevice.cpp)  # the Vita renderer (null for now)
@@ -89,6 +90,20 @@ target_compile_options(SurrealCoreVita PRIVATE -O2 -Wno-narrowing)
 option(VITA_AGGRESSIVE "compile the engine with -O3 -marm" ON)
 if(VITA_AGGRESSIVE)
 	target_compile_options(SurrealCoreVita PRIVATE -O3 -marm)
+endif()
+# Function-local statics without the thread-safe guard (#209): each use of one was an acquire load with a 'dmb' barrier (22
+# such sites in VM/Frame.cpp alone, 3-4 on every script statement). Nothing relies on it: the worker / GL threads must not be the
+# first to touch a function-local static anyway (the guard's wait crashed there: vita/CLAUDE.md, Rules).
+# Link-time optimization of the engine (#210, experimental: build-lto/): small functions of other files inlined (ExpressionValue,
+# NameString, property access). Needs the gcc-ar/gcc-ranlib wrappers: cmake -DVITA_LTO=ON -DCMAKE_AR=.../arm-vita-eabi-gcc-ar
+# -DCMAKE_RANLIB=.../arm-vita-eabi-gcc-ranlib ..
+option(VITA_LTO "link-time optimization of the engine core" OFF)
+if(VITA_LTO)
+	target_compile_options(SurrealCoreVita PRIVATE -flto=auto -ffat-lto-objects)
+endif()
+option(VITA_NO_SAFE_STATICS "compile the engine and the app with -fno-threadsafe-statics" ON)
+if(VITA_NO_SAFE_STATICS)
+	target_compile_options(SurrealCoreVita PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-fno-threadsafe-statics>)
 endif()
 # Tuning for the Vita's processor. If something crashes that did not before, try it off:  cmake -DVITA_TUNE_FLAGS=OFF ..
 option(VITA_TUNE_FLAGS "compile the engine with -mtune=cortex-a9 -fno-math-errno" ON)
@@ -179,6 +194,11 @@ if(VITA_EXTRA_MEMORY)
 endif()
 set(VITA_HEAP_MB 192 CACHE STRING "memory for malloc/new in megabytes: raise it if the log says std::bad_alloc")
 target_compile_definitions(flipendo PRIVATE VITA_HEAP_MB=${VITA_HEAP_MB})
+# HP1's debug mode (the title menu's Level Select ...): bash build.sh debug / release. Only vita_main.cpp changes with it.
+option(VITA_GAME_DEBUG "HP1's debug mode on (Level Select in the title menu); OFF for a build to publish" OFF)
+if(VITA_GAME_DEBUG)
+	target_compile_definitions(flipendo PRIVATE VITA_GAME_DEBUG=1)
+endif()
 if(VITA_PROFILE)
 	target_sources(flipendo PRIVATE ${CMAKE_CURRENT_LIST_DIR}/profile.cpp)
 	target_compile_definitions(flipendo PRIVATE VITA_PROFILE)
@@ -192,6 +212,12 @@ if(VITA_HP2)
 	target_compile_definitions(flipendo PRIVATE VITA_HP2)
 endif()
 target_compile_options(flipendo PRIVATE -O2 -Wno-narrowing)
+if(VITA_NO_SAFE_STATICS)
+	target_compile_options(flipendo PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-fno-threadsafe-statics>)
+endif()
+if(VITA_LTO)
+	target_link_options(flipendo PRIVATE -flto=auto -O3 -marm -mtune=cortex-a9 -fno-math-errno -fno-threadsafe-statics)
+endif()
 set_target_properties(flipendo PROPERTIES CXX_STANDARD 20)
 
 # Only the engine core is pulled in whole (its natives and classes register themselves from global objects):

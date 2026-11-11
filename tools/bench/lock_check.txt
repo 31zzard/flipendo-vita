@@ -1,0 +1,7 @@
+# Whether the cursor is locked: title menu, a level, its pause menu (MenuBook REPORT), back
+timeout=150
+stall=200
+arg=--level=Lev_Tut1
+arg=--slot=5
+env=HP1_SKIPCUTS=1
+env=HP1_EXEC=25:@console.MenuBook OpenBook REPORT;30:@console.MenuBook ChangePageNamed OPTIONS;35:@console.MenuBook CloseBook;40:exit

@@ -1,0 +1,9 @@
+# The user's save in slot 0 with probes
+# The user's save in slot 0 with probes
+timeout=260
+stall=50
+env=VITA_BENCH=1
+env=RCFG_probes=1
+env=RCFG_section_timers=1
+env=HP1_MOUSE=58:25:0:15
+env=HP1_EXEC=15:@console.MenuBook.SlotPage SetSelectedSlot 0;16:@console.MenuBook.SlotPage LoadSelectedSlot;43:@get harry0 Location;58:@get harry0 Rotation;74:exit

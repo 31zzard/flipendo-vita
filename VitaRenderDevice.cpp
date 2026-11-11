@@ -24,6 +24,51 @@
 #include <cstdio>
 #include <cstring>
 #include <vector>
+#include <arm_neon.h>
+
+// A light or fog map's floats to bytes, as (uint8_t)(clamp(v, 0, 1) * 255 + 0.5) one by one did (NEON's conversion truncates like the
+// C cast; a NaN stays NaN through the clamps and converts to 0 both ways; flush to zero is on for both). Four at a time: the scalar
+// loop's float to integer conversions were ~4 ms a frame in Lev4_Sneak2's opening (36 light maps built again a frame).
+// Input to screen (log line 'input to screen'): when each frame the engine began (the input of that frame is read at its start)
+// went to the screen. The display callback (vglSetDisplayCallback) runs on the display queue's thread: plain globals only.
+static uint64_t vitaFrameStarts[64];
+static volatile uint32_t vitaFramesSwapped = 0, vitaFramesShown = 0;
+static volatile uint64_t vitaShownUsSum = 0, vitaShownCount = 0;
+static uint64_t vitaNextFrameStart = 0;   // the end of the last Unlock: where the next frame's input is read (main thread)
+static void VitaFrameShown(void*)
+{
+	vitaShownVcount = sceDisplayGetVcount();   // fps_lock's pacing (VitaGLQueue.h)
+	const uint32_t shown = vitaFramesShown;
+	if (shown >= vitaFramesSwapped)
+		return;
+	__sync_synchronize();
+	const uint64_t start = vitaFrameStarts[shown % 64];
+	vitaShownUsSum += sceKernelGetProcessTimeWide() - start;
+	vitaShownCount++;
+	vitaFramesShown = shown + 1;
+}
+
+static void VitaFloatsToBytes(const float* in, uint8_t* out, size_t n)
+{
+	const float32x4_t zero = vdupq_n_f32(0.0f), one = vdupq_n_f32(1.0f), scale = vdupq_n_f32(255.0f), half = vdupq_n_f32(0.5f);
+	size_t i = 0;
+	for (; i + 8 <= n; i += 8)
+	{
+		float32x4_t a = vld1q_f32(in + i), b = vld1q_f32(in + i + 4);
+		a = vminq_f32(vmaxq_f32(a, zero), one);
+		b = vminq_f32(vmaxq_f32(b, zero), one);
+		a = vaddq_f32(vmulq_f32(a, scale), half);
+		b = vaddq_f32(vmulq_f32(b, scale), half);
+		const uint16x8_t w = vcombine_u16(vmovn_u32(vcvtq_u32_f32(a)), vmovn_u32(vcvtq_u32_f32(b)));
+		vst1_u8(out + i, vmovn_u16(w));
+	}
+	for (; i < n; i++)
+	{
+		float v = in[i];
+		v = v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v);
+		out[i] = (uint8_t)(v * 255.0f + 0.5f);
+	}
+}
 
 #ifndef GL_COMPRESSED_RGBA_S3TC_DXT1_EXT
 #define GL_COMPRESSED_RGBA_S3TC_DXT1_EXT 0x83F1
@@ -120,6 +165,29 @@ VitaRenderDevice::VitaRenderDevice(Widget* viewport)
 
 	LoadSettings();
 	Viewport->SetGLSwapInterval(settings.vsync ? 1 : 0);
+	vglSetDisplayCallback(&VitaFrameShown);
+
+	// VitaFloatsToBytes against the scalar loop it replaced: edges, NaN, and a sweep (log line; it must say 0 differ)
+	{
+		std::vector<float> in;
+		const float edges[] = { -1.0f, -0.0f, 0.0f, 1e-40f, 0.5f / 255.0f, 0.5f, 0.998f, 1.0f, 1.0001f, 7.0f, NAN, INFINITY, -INFINITY };
+		for (float e : edges)
+			in.push_back(e);
+		for (int i = 0; i < 200000; i++)
+			in.push_back(-0.1f + 1.2f * (float)i / 200000.0f);
+		std::vector<uint8_t> fast(in.size()), slow(in.size());
+		VitaFloatsToBytes(in.data(), fast.data(), in.size());
+		size_t differ = 0;
+		for (size_t i = 0; i < in.size(); i++)
+		{
+			float v = in[i];
+			v = v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v);
+			slow[i] = (uint8_t)(v * 255.0f + 0.5f);
+			if (slow[i] != fast[i])
+				differ++;
+		}
+		LogMessage("VitaFloatsToBytes self-test: " + std::to_string(in.size()) + " values, " + std::to_string(differ) + " differ from the scalar loop");
+	}
 
 	// The GL calls go through the queue: on the "glsubmit" thread (gl_thread=1) or at once
 	gl = new VitaGL::Queue();
@@ -145,6 +213,8 @@ VitaRenderDevice::~VitaRenderDevice()
 // ux0:data/flipendo/render.cfg: lines "name=value", see VitaRenderDevice.h
 void VitaRenderDevice::LoadSettings()
 {
+	if (const char* env = getenv("RCFG_fps_lock"))   // newer than most render.cfg files on the card: the override needs no line there
+		settings.fpsLock = atoi(env);
 	FILE* file = fopen(VITA_DATA_ROOT "/render.cfg", "r");
 	if (file)
 	{
@@ -155,6 +225,10 @@ void VitaRenderDevice::LoadSettings()
 			int value = 0;
 			if (sscanf(line, " %63[a-z_0-9] = %d", name, &value) != 2)
 				continue;
+			char envName[80]; // RCFG_<name> wins here too, as in VitaConfigInt (a key must be in the file)
+			snprintf(envName, sizeof(envName), "RCFG_%s", name);
+			if (const char* env = getenv(envName))
+				value = atoi(env);
 			if (!strcmp(name, "lightmap_scale")) settings.lightmapScale = value;
 			else if (!strcmp(name, "lightmap")) settings.lightmap = value != 0;
 			else if (!strcmp(name, "macro")) settings.macro = value != 0;
@@ -174,6 +248,7 @@ void VitaRenderDevice::LoadSettings()
 			else if (!strcmp(name, "heartbeat")) settings.heartbeat = value != 0;
 			else if (!strcmp(name, "section_timers")) settings.sectionTimers = value != 0;
 			else if (!strcmp(name, "vsync")) settings.vsync = value != 0;
+			else if (!strcmp(name, "fps_lock")) settings.fpsLock = value;
 			else if (!strcmp(name, "atlas_pages")) settings.atlasPages = std::clamp(value, 1, 16);
 			else if (!strcmp(name, "atlas_direct")) settings.atlasDirect = value != 0;
 			else if (!strcmp(name, "probes")) VitaProbes::wanted = value != 0;
@@ -187,6 +262,8 @@ void VitaRenderDevice::LoadSettings()
 		}
 		fclose(file);
 	}
+	// The player's frame rate cap: 30 (every game frame two refreshes long, even) or 60 (vsync only); anything else is 60
+	settings.fpsLock = settings.fpsLock == 30 ? 30 : 60;
 	deviceTimingOn = settings.deviceTiming;
 	VitaTimers::enabled = settings.sectionTimers;
 	LogMessage("VitaRenderDevice: settings lightmap_scale=" + std::to_string(settings.lightmapScale) +
@@ -196,7 +273,7 @@ void VitaRenderDevice::LoadSettings()
 		" texture_budget_mb=" + std::to_string(settings.textureBudgetMb) + " texture_lod=" + std::to_string(settings.textureLod) +
 		" free_lightmap_data=" + std::to_string(settings.freeLightmapData) +
 		" world=" + std::to_string(settings.drawWorld) + " meshes=" + std::to_string(settings.drawMeshes) +
-		" device_timing=" + std::to_string(settings.deviceTiming) + " surface_batching=" + std::to_string(settings.batchSurfaces) + " section_timers=" + std::to_string(settings.sectionTimers) + " mipmaps=" + std::to_string(settings.mipmaps) + " upload_budget_ms=" + std::to_string(settings.uploadBudgetMs) + " texture_inplace=" + std::to_string(settings.textureInplace) + " heartbeat=" + std::to_string(settings.heartbeat) + " vsync=" + std::to_string(settings.vsync) +
+		" device_timing=" + std::to_string(settings.deviceTiming) + " surface_batching=" + std::to_string(settings.batchSurfaces) + " section_timers=" + std::to_string(settings.sectionTimers) + " mipmaps=" + std::to_string(settings.mipmaps) + " upload_budget_ms=" + std::to_string(settings.uploadBudgetMs) + " texture_inplace=" + std::to_string(settings.textureInplace) + " heartbeat=" + std::to_string(settings.heartbeat) + " vsync=" + std::to_string(settings.vsync) + " fps_lock=" + std::to_string(settings.fpsLock) +
 		" atlas_pages=" + std::to_string(settings.atlasPages) + " atlas_direct=" + std::to_string(settings.atlasDirect) +
 		" gl_thread=" + std::to_string(settings.glThread) + " gl_thread_core=" + std::to_string(settings.glThreadCore) +
 		" gl_thread_priority=" + std::to_string(settings.glThreadPriority) + " surface_cache=" + std::to_string(settings.surfaceCache) +
@@ -357,7 +434,8 @@ void VitaRenderDevice::Lock(vec4 FlashScale, vec4 FlashFog, vec4 ScreenClear, ui
 
 	lockTime = NowMs();
 	// The lap timers run in one frame of VitaProbes::SampleEvery (from this frame's drawing to the next frame's tick)
-	VitaProbes::enabled = VitaProbes::wanted && (frameCount % VitaProbes::SampleEvery) == 0;
+	static const int probeEvery = std::max(1, VitaConfigInt("probe_every", VitaProbes::SampleEvery)); // render.cfg probe_every=1: every frame (slow frames get their laps)
+	VitaProbes::enabled = VitaProbes::wanted && (frameCount % probeEvery) == 0;
 	if (VitaProbes::enabled)
 		VitaProbes::sampledFrames++;
 	if (lastUnlockEnd > 0.0)
@@ -418,13 +496,38 @@ void VitaRenderDevice::Unlock(bool Blit)
 	VitaStats::totalUploads += uploadsFrame;
 
 	// With the thread: the frame is handed over (waiting for the one before); the thread presents it
+	// fps_lock=30 (render.cfg, with vsync): a frame of the game stays two refreshes on the screen, every frame 33.3 ms; the menus and
+	// loading screens (no level surface drawn) keep 60
+	const int swapInterval = !settings.vsync ? 0 : (settings.fpsLock == 30 && statSurfaces > 0 ? 2 : 1);
+	{
+		const uint32_t n = vitaFramesSwapped;
+		if (n - vitaFramesShown < 60)   // the callback keeps up (else nothing is added: measuring stops, nothing breaks)
+		{
+			vitaFrameStarts[n % 64] = vitaNextFrameStart ? vitaNextFrameStart : sceKernelGetProcessTimeWide();
+			__sync_synchronize();
+			vitaFramesSwapped = n + 1;
+		}
+	}
 	if (gl->Threaded())
 	{
-		gl->Swap();
+		// fps_lock: paced here, on the engine's thread, before the hand-over: the next frame then starts (and reads the sticks)
+		// after the wait, not a frame earlier (pacing on the GL thread: 70 ms from input to screen, here: less)
+		if (swapInterval >= 2)
+			VitaPaceTwoRefreshes();
+		gl->Swap(swapInterval >= 2 ? 1 : swapInterval);
 		gl->Submit();
 	}
 	else
 	{
+		static int lastInterval = -1;
+		const int wanted = swapInterval >= 2 ? 1 : swapInterval;   // 2: paced here, vitaGL at 1 (VitaGLQueue.h)
+		if (wanted != lastInterval)
+		{
+			lastInterval = wanted;
+			eglSwapInterval(0, wanted);
+		}
+		if (swapInterval >= 2)
+			VitaPaceTwoRefreshes();
 		Viewport->SwapGLBuffers();
 	}
 
@@ -433,6 +536,7 @@ void VitaRenderDevice::Unlock(bool Blit)
 	VitaStats::totalPresentMs += now - beforeSwap;
 	const double frameMs = lastUnlockEnd > 0.0 ? now - lastUnlockEnd : 0.0;
 	lastUnlockEnd = now;
+	vitaNextFrameStart = sceKernelGetProcessTimeWide();
 	frameCount++;
 	if (frameCount == 1)
 		VitaBootMark("the first frame is shown");
@@ -443,7 +547,8 @@ void VitaRenderDevice::Unlock(bool Blit)
 		using namespace VitaTimers;
 		static_assert(Count <= 32, "slowBefore is too small");
 		double* before = slowBefore;
-		if (frameMs > settings.slowFrameMs && slowLogged < 20)
+		static double slowProbeBefore[VitaProbes::Count] = {};
+		if (frameMs > settings.slowFrameMs && slowLogged < 400)
 		{
 			slowLogged++;
 			auto d = [&](Section section)
@@ -459,15 +564,42 @@ void VitaRenderDevice::Unlock(bool Blit)
 				", procedural textures " + d(TexUpdate) + ")]; " + std::to_string(statSurfaces) + " surfaces, " +
 				std::to_string(statPolygons) + " polygons, " + std::to_string(statTiles) + " tiles, " + std::to_string(statDraws) + " draw calls; texture uploads " + std::to_string(uploadsFrame) +
 				" (" + std::to_string((int)uploadMsFrame) + " ms)");
+			if (VitaProbes::enabled && VitaProbes::wanted)   // probe_every=1: this frame's biggest laps
+			{
+				std::vector<std::pair<double, int>> top;
+				for (int i = 0; i < VitaProbes::Count; i++)
+					if (VitaProbes::us[i] - slowProbeBefore[i] > 1000.0)
+						top.push_back({ VitaProbes::us[i] - slowProbeBefore[i], i });
+				std::sort(top.begin(), top.end(), [](auto& a, auto& b) { return a.first > b.first; });
+				std::string text = "SLOW FRAME laps (ms):";
+				for (size_t i = 0; i < top.size() && i < 16; i++)
+				{
+					char part[96];
+					snprintf(part, sizeof(part), " %s %.1f;", VitaProbes::names[top[i].second], top[i].first / 1000.0);
+					text += part;
+				}
+				LogMessage(text);
+			}
 		}
 		for (int i = 0; i < Count; i++)
 			before[i] = ms[i];
+		for (int i = 0; i < VitaProbes::Count; i++)
+			slowProbeBefore[i] = VitaProbes::us[i];
 	}
 
 	// Where the time goes, every 120 frames: engine (scripts, physics, sound), the picture (the engine preparing it
 	// plus the renderer's own calls, of which "device" is the part inside this file), waiting to present
 	if (++accFrames == 120)
 	{
+		{
+			const uint64_t sum = vitaShownUsSum, cnt = vitaShownCount;
+			static uint64_t lastSum = 0, lastCnt = 0;
+			if (cnt > lastCnt)
+				LogMessage("VitaRenderDevice: input to screen " + std::to_string((double)(sum - lastSum) / (double)(cnt - lastCnt) / 1000.0) +
+					" ms on average (a frame's start to its showing; " + std::to_string(cnt - lastCnt) + " frames shown)");
+			lastSum = sum;
+			lastCnt = cnt;
+		}
 		LogMessage("VitaRenderDevice: frame " + std::to_string(frameCount) + ", per frame: engine " +
 			std::to_string(accEngine / accFrames) + " ms, picture " + std::to_string(accRender / accFrames) +
 			" ms (device " + std::to_string(deviceMs / accFrames) + " ms), present " + std::to_string(accSwap / accFrames) +
@@ -514,12 +646,27 @@ void VitaRenderDevice::Unlock(bool Blit)
 				snprintf(text, sizeof(text), "%.1f", ms[section] / n);
 				return std::string(text);
 			};
+			if (VitaTimers::heapProbe == 1) // heap_probe=1: where the heap grew
+			{
+				static const char* const sectionNames[] = { "LevelTick", "ConsoleTick", "Audio", "DrawGame", "BspInfo", "Process", "DrawNodes", "Mesh",
+					"Particles", "Lightmaps", "ParticleTick", "SoundLoad", "DrawPortals", "DrawOpaque", "DrawActors", "DrawTranslucent", "DrawBrushes",
+					"Hud", "Overlays", "LightBegin", "Coronas", "Unlock", "Input", "Mods", "ViewFlash", "LoopRest", "EntryTick", "TexUpdate" };
+				static_assert(sizeof(sectionNames) / sizeof(sectionNames[0]) == VitaTimers::Count, "section names");
+				std::string text = "VitaRenderDevice: heap growth by section, KB in the period:";
+				for (int i = 0; i < VitaTimers::Count; i++)
+				{
+					if (VitaTimers::heapGrowth[i] != 0)
+						text += std::string(" ") + sectionNames[i] + " " + std::to_string(VitaTimers::heapGrowth[i] / 1024);
+					VitaTimers::heapGrowth[i] = 0;
+				}
+				LogMessage(text + "; heap now " + std::to_string(VitaTimers::HeapInUse() / 1024) + " KB");
+			}
 			LogMessage("VitaRenderDevice: engine parts, ms per game frame (" + std::to_string((int)n) + " frames): level tick " + f(LevelTick) +
 				", console " + f(ConsoleTick) + ", audio " + f(Audio) + ", draw game " + f(DrawGame) +
 				" [bsp info " + f(BspInfo) + ", process " + f(Process) + ", draw nodes " + f(DrawNodes) +
 				" (meshes " + f(Mesh) + ", particles " + f(Particles) + ", lightmaps " + f(Lightmaps) + ")]; in level tick: particles " +
 				f(ParticleTick) + ", sound decoding " + f(SoundLoad) + "; outside: input " + f(Input) + ", mods " + f(Mods) +
-				", ViewFlash/CalcView " + f(ViewFlash) + ", clock/localtime " + f(LoopRest));
+				", ViewFlash/CalcView " + f(ViewFlash) + ", clock/localtime " + f(LoopRest) + ", entry level " + f(EntryTick));
 			// draw nodes by step (the main view; a sky zone's or mirror's whole frame is in 'sky/mirrors'), and the procedural textures
 			std::string texts;
 			{
@@ -527,7 +674,7 @@ void VitaRenderDevice::Unlock(bool Blit)
 				for (auto& it : texTimes)
 					sorted.push_back(&it.second);
 				std::sort(sorted.begin(), sorted.end(), [](const TexTime* a, const TexTime* b) { return a->ms > b->ms; });
-				for (size_t i = 0; i < sorted.size() && i < 5; i++)
+				for (size_t i = 0; i < sorted.size() && i < 7; i++)
 				{
 					char text[160];
 					snprintf(text, sizeof(text), "%s%s %.2f ms (%.1f new pictures)", i ? ", " : "", sorted[i]->name.c_str(),
@@ -647,6 +794,44 @@ void VitaRenderDevice::Unlock(bool Blit)
 				VitaStats::lodVerts = VitaStats::lodModelVerts = 0.0;
 				LogMessage(line);
 
+				// (vm_laps=1) the script expression nodes run, by kind (VM/Expression.h ExpressionType order)
+				if (VitaProbes::vmLaps == 1)
+				{
+					static const char* const exprNames[] = { "LocalVariable", "InstanceVariable", "DefaultVariable", "Return", "Switch", "Jump",
+						"JumpIfNot", "Stop", "Assert", "Case", "Nothing", "LabelTable", "GotoLabel", "EatString", "Let", "DynArrayElement", "New",
+						"ClassContext", "MetaCast", "LetBool", "Unknown0x15", "Self", "Skip", "Context", "ArrayElement", "IntConst", "FloatConst",
+						"StringConst", "ObjectConst", "NameConst", "RotationConst", "VectorConst", "ByteConst", "IntZero", "IntOne", "True", "False",
+						"NativeParm", "NoObject", "Unknown0x2b", "IntConstByte", "BoolVariable", "DynamicCast", "Iterator", "IteratorPop",
+						"IteratorNext", "StructCmpEq", "StructCmpNe", "UnicodeStringConst", "StructMember", "RotatorToVector", "ByteToInt",
+						"ByteToBool", "ByteToFloat", "IntToByte", "IntToBool", "IntToFloat", "BoolToByte", "BoolToInt", "BoolToFloat",
+						"FloatToByte", "FloatToInt", "FloatToBool", "Unknown0x46", "ObjectToBool", "NameToBool", "StringToByte", "StringToInt",
+						"StringToBool", "StringToFloat", "StringToVector", "StringToRotator", "VectorToBool", "VectorToRotator", "RotatorToBool",
+						"ByteToString", "IntToString", "BoolToString", "FloatToString", "ObjectToString", "NameToString", "VectorToString",
+						"RotatorToString", "StringToName", "DynArrayToInt", "VirtualFunction", "FinalFunction", "GlobalFunction",
+						"NativeFunction", "FunctionArguments", "Construct" };
+					const int known = (int)(sizeof(exprNames) / sizeof(exprNames[0]));
+					std::vector<std::pair<unsigned, int>> kinds;
+					unsigned total = 0;
+					for (int i = 0; i < 128; i++)
+					{
+						if (VitaProbes::exprCounts[i])
+							kinds.push_back({ VitaProbes::exprCounts[i], i });
+						total += VitaProbes::exprCounts[i];
+						VitaProbes::exprCounts[i] = 0;
+					}
+					std::sort(kinds.begin(), kinds.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+					char head[96];
+					snprintf(head, sizeof(head), "VitaRenderDevice: expressions run a frame: all %.0f;", total / n);
+					std::string exprLine = head;
+					for (size_t i = 0; i < kinds.size() && i < 24; i++)
+					{
+						char part[80];
+						snprintf(part, sizeof(part), " %s %.0f;", kinds[i].second < known ? exprNames[kinds[i].second] : "?", kinds[i].first / n);
+						exprLine += part;
+					}
+					LogMessage(exprLine);
+				}
+
 				// The actor classes whose ticks took the most time
 				std::vector<const VitaProbes::ClassTime*> classes;
 				double tickTotal = 0.0;
@@ -668,12 +853,45 @@ void VitaRenderDevice::Unlock(bool Blit)
 						classes[i]->calls / ns, classes[i]->eventUs / 1000.0 / ns, classes[i]->physicsUs / 1000.0 / ns);
 					ticks += part;
 				}
+				if (VitaTimers::heapProbe == 1) // #138: the classes whose ticks took heap
+				{
+					std::vector<const VitaProbes::ClassTime*> heapy;
+					for (auto& it : VitaProbes::classTimes)
+						if (it.second.heapBytes > 64 * 1024)
+							heapy.push_back(&it.second);
+					std::sort(heapy.begin(), heapy.end(), [](const VitaProbes::ClassTime* a, const VitaProbes::ClassTime* b) { return a->heapBytes > b->heapBytes; });
+					ticks += " heap growth in ticks:";
+					for (size_t i = 0; i < heapy.size() && i < 12; i++)
+						ticks += " " + heapy[i]->name + " +" + std::to_string(heapy[i]->heapBytes / 1024) + " KB;";
+					for (auto& it : VitaProbes::classTimes)
+						it.second.heapBytes = 0;
+				}
 				LogMessage(ticks);
 				for (auto& it : VitaProbes::classTimes)
 				{
 					it.second.us = 0.0;
 					it.second.calls = 0;
 					it.second.eventUs = it.second.physicsUs = 0.0;
+				}
+				if (VitaProbes::scriptProfile == 1 && !VitaProbes::funcTimes.empty()) // #135 script_profile=1
+				{
+					std::vector<const VitaProbes::FuncTime*> funcs;
+					for (auto& it : VitaProbes::funcTimes)
+						funcs.push_back(&it.second);
+					std::sort(funcs.begin(), funcs.end(), [](const VitaProbes::FuncTime* a, const VitaProbes::FuncTime* b) { return a->us > b->us; });
+					std::string text = "VitaRenderDevice: script functions by time, ms per frame inclusive (calls per frame):";
+					for (size_t i = 0; i < funcs.size() && i < 24; i++)
+					{
+						char part[200];
+						snprintf(part, sizeof(part), " %s %.2f (%.1f);", funcs[i]->name.c_str(), funcs[i]->us / 1000.0 / ns, funcs[i]->calls / ns);
+						text += part;
+					}
+					LogMessage(text);
+					for (auto& it : VitaProbes::funcTimes)
+					{
+						it.second.us = 0.0;
+						it.second.calls = 0;
+					}
 				}
 			}
 			VitaStats::lightmapCalls = VitaStats::lightmapRebuilds = VitaStats::lightmapIncremental = VitaStats::lightmapTexels = 0;
@@ -855,7 +1073,13 @@ void VitaRenderDevice::FlushPolygons()
 	SetColorArray(true);
 
 	const GLsizei stride = (GLsizei)sizeof(BatchVertex);
+	const uint64_t vitaKeepStart = VitaProbes::enabled ? VitaProbes::Now() : 0;
 	const BatchVertex* verts = (const BatchVertex*)gl->Keep(batchVerts.data(), count * sizeof(BatchVertex));
+	if (VitaProbes::enabled)
+	{
+		VitaProbes::us[VitaProbes::KeepCopy] += (double)(VitaProbes::Now() - vitaKeepStart);
+		VitaProbes::calls[VitaProbes::KeepCopy] += (unsigned)(count * sizeof(BatchVertex) / 1024);
+	}
 	gl->VertexPointer(3, stride, &verts[0].x);
 	gl->TexCoordPointer(2, stride, &verts[0].u);
 	gl->ColorPointer(4, stride, &verts[0].r);
@@ -1391,16 +1615,11 @@ VitaRenderDevice::LightmapPixels* VitaRenderDevice::GetLightmapSlot(TextureInfo&
 	const size_t count = (size_t)w * h;
 	if (mip.Data.size() >= count * 16 && (changed || Info.bRealtimeChanged))
 	{
-		const float* floats = (const float*)mip.Data.data();
-		uint8_t* out = lightmap.rgba.data();
-		for (size_t i = 0; i < count * 4; i++)
-		{
-			float v = floats[i];
-			v = v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v);
-			out[i] = (uint8_t)(v * 255.0f + 0.5f);
-		}
+		VitaFloatsToBytes((const float*)mip.Data.data(), lightmap.rgba.data(), count * 4);
 		changed = true;
-		if (settings.freeLightmapData)
+		if (lightmap.uploads < 255)
+			lightmap.uploads++;
+		if (settings.freeLightmapData && lightmap.uploads <= 1)
 		{
 			mip.Data.clear();
 			mip.Data.shrink_to_fit();
@@ -1704,9 +1923,52 @@ void VitaRenderDevice::DrawComplexSurface(SceneNode* Frame, SurfaceInfo& Surface
 		return;
 	}
 
-	SetColorArray(false);
 	const float exposure = settings.exposure / 100.0f;
-	gl->Color4f(exposure, exposure, exposure, 1.0f);
+
+	// A translucent surface is lit like any other (texture x light map x 2, then blended), but the light map pass multiplies
+	// what is already on the screen, which behind a translucent surface is the room seen through it. So its light comes as
+	// vertex colours: the light map read at each vertex. Without this a translucent pane was drawn at full brightness: the
+	// grey ripples of Lev_Tut3's Alohomora mirror (MirrorBlur, Translucent + SpecialLit, in a dim room) came out white.
+	bool litByVertex = false;
+	if (!opaque && (flags & KeyTranslucent) && !(flags & KeyModulated) && settings.lightmap && Surface.LightMap &&
+		Surface.LightMap->Format == TextureFormat::RGBA32_F && Surface.LightMap->Mips && Surface.LightMap->NumMips > 0)
+	{
+		const UnrealMipmap& lm = Surface.LightMap->Mips[0];
+		const int w = lm.Width, h = lm.Height;
+		if (w > 0 && h > 0 && lm.Data.size() >= (size_t)w * h * 16)
+		{
+			const float* texels = (const float*)lm.Data.data();
+			const TextureInfo& li = *Surface.LightMap;
+			const float uPanLm = UDot + li.Pan.x - 0.5f * li.UScale, vPanLm = VDot + li.Pan.y - 0.5f * li.VScale;
+			const float uMultLm = GetUMult(li), vMultLm = GetVMult(li);
+			const float scale = (settings.lightmapScale >= 2 ? 2.0f : 1.0f) * exposure;
+			vertexColors.resize((size_t)count * 4);
+			for (int i = 0; i < count; i++)
+			{
+				const vec3 point = Facet.Vertices[i];
+				// texel centres sit at i + 0.5 of these coordinates, as for the GPU's sampling: bilinear, clamped
+				const float x = std::clamp((dot(xaxis, point) - uPanLm) * uMultLm * w - 0.5f, 0.0f, (float)(w - 1));
+				const float y = std::clamp((dot(yaxis, point) - vPanLm) * vMultLm * h - 0.5f, 0.0f, (float)(h - 1));
+				const int x0 = (int)x, y0 = (int)y;
+				const int x1 = std::min(x0 + 1, w - 1), y1 = std::min(y0 + 1, h - 1);
+				const float fx = x - x0, fy = y - y0;
+				for (int c = 0; c < 3; c++)
+				{
+					const float top = texels[(y0 * w + x0) * 4 + c] * (1.0f - fx) + texels[(y0 * w + x1) * 4 + c] * fx;
+					const float bottom = texels[(y1 * w + x0) * 4 + c] * (1.0f - fx) + texels[(y1 * w + x1) * 4 + c] * fx;
+					vertexColors[i * 4 + c] = std::min((top * (1.0f - fy) + bottom * fy) * scale, 1.0f);
+				}
+				vertexColors[i * 4 + 3] = 1.0f;
+			}
+			litByVertex = true;
+		}
+	}
+
+	SetColorArray(litByVertex);
+	if (litByVertex)
+		gl->ColorPointer(4, 0, gl->Keep(vertexColors.data(), (size_t)count * 4 * sizeof(float)));
+	else
+		gl->Color4f(exposure, exposure, exposure, 1.0f);
 	gl->VertexPointer(3, 0, gl->Keep(positions.data(), (size_t)count * 3 * sizeof(float)));
 
 	// Pass 1: the texture
@@ -1718,6 +1980,11 @@ void VitaRenderDevice::DrawComplexSurface(SceneNode* Frame, SurfaceInfo& Surface
 	gl->TexCoordPointer(2, 0, gl->Keep(uv0.data(), (size_t)count * 2 * sizeof(float)));
 	gl->DrawArrays(GL_TRIANGLE_FAN, 0, count);
 	statDraws++;
+	if (litByVertex)
+	{
+		SetColorArray(false);
+		gl->Color4f(exposure, exposure, exposure, 1.0f);   // the colour the next draws expect
+	}
 
 	if (!lmInfo && !macroInfo && !fogInfo)
 		return;
@@ -1812,6 +2079,48 @@ void VitaRenderDevice::DrawGouraudTriangles(SceneNode* Frame, TextureInfo& Info,
 }
 
 // A mesh polygon (characters, objects): textured, with the light given per vertex. Collected into a batch.
+// Particles (#127, KW::DrawParticleSystem): room for maxVerts triangle vertices in the batch, written by the caller (fewer passes
+// over memory than GouraudVertex arrays). params: u and v multipliers, the light multiplier, 1 when the colours are ignored.
+float* VitaRenderDevice::VitaBeginTriangles(SceneNode* Frame, TextureInfo& Info, uint32_t PolyFlags, int maxVerts, float* params)
+{
+	if (!settings.drawMeshes || maxVerts <= 0)
+		return nullptr;
+	PolyFlags = ApplyPrecedenceRules(PolyFlags);
+	if (PolyFlags & PF_Invisible)
+		return nullptr;
+
+	ScopedDeviceTimer timer;
+	if (!haveFrame)
+		SetSceneNode(Frame);
+	Begin3D();
+	if (surfacesPending)
+		FlushSurfaces();
+
+	TextureEntry* tex = GetTextureEntry(Info, !!(PolyFlags & PF_Masked), settings.textureLod, true);
+	BatchKey key;
+	key.texture = tex;
+	key.flags = KeyFlags(PolyFlags);
+	key.nearest = !!(PolyFlags & PF_NoSmooth);
+	key.clamp = false;
+	key.mode = Mode::Scene;
+	SwitchBatch(key);
+
+	const bool modulated = !!(PolyFlags & PF_Modulated);
+	params[0] = GetUMult(Info);
+	params[1] = GetVMult(Info);
+	params[2] = settings.exposure / 100.0f;
+	params[3] = modulated ? 1.0f : 0.0f;
+	appendFirst = batchVerts.size();
+	batchVerts.resize(appendFirst + (size_t)maxVerts);
+	return &batchVerts[appendFirst].x;
+}
+
+void VitaRenderDevice::VitaEndTriangles(int usedVerts)
+{
+	batchVerts.resize(appendFirst + (size_t)std::max(usedVerts, 0));
+	statPolygons += usedVerts / 3;
+}
+
 void VitaRenderDevice::DrawGouraudPolygon(SceneNode* Frame, TextureInfo& Info, const GouraudVertex* Pts, int NumPts, uint32_t PolyFlags)
 {
 	if (!settings.drawMeshes || NumPts < 3)
@@ -2374,13 +2683,7 @@ void VitaRenderDevice::UploadTexture(TextureEntry& entry, TextureInfo& Info, boo
 		}
 		else
 		{
-			const float* floats = (const float*)src;
-			for (size_t i = 0; i < count * 4; i++)
-			{
-				float v = floats[i];
-				v = v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v);
-				bytes[i] = (uint8_t)(v * 255.0f + 0.5f);
-			}
+			VitaFloatsToBytes((const float*)src, bytes, count * 4);
 			// A light map (CacheID ends in 1; fog maps in 2): keep our copy where the atlas path looks for it. Before this the atlas
 			// path, meeting a light map whose float data this path had already given back, filled its slot WHITE (wrong lighting).
 			if ((Info.CacheID & 0xff) == 1)
@@ -2410,7 +2713,15 @@ void VitaRenderDevice::UploadTexture(TextureEntry& entry, TextureInfo& Info, boo
 		entry.pinned = true;
 		VitaStats::lightmapCount++;
 		VitaStats::lightmapBytes += mip.Data.size();
-		if (settings.freeLightmapData && mip.Data.size() >= count * 16)
+		bool vitaFirstUpload = true;   // a light map made again keeps its float copy (LightmapPixels::uploads)
+		if ((Info.CacheID & 0xff) == 1)
+		{
+			LightmapPixels& kept = lightmaps[Info.CacheID];
+			if (kept.uploads < 255)
+				kept.uploads++;
+			vitaFirstUpload = kept.uploads <= 1;
+		}
+		if (settings.freeLightmapData && vitaFirstUpload && mip.Data.size() >= count * 16)
 		{
 			VitaStats::lightmapFreed += mip.Data.size();
 			mip.Data.clear();

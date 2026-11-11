@@ -1,0 +1,6 @@
+# Game debug build: the title menu (Level Select shown?) and the level select page
+timeout=120
+stall=40
+env=HP1_SHOT_DIR=ux0:data/flipendo
+env=HP1_SHOTS=14,24
+env=HP1_EXEC=16:@console.MenuBook ChangePageNamed LEVSELECT;30:exit

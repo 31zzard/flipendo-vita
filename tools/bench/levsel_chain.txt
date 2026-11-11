@@ -1,0 +1,7 @@
+# Debug build, the user's way: level select into Lev5_Chess, then Lev5_Final, then Lev4_Sneak2 (RunURL each); probes
+timeout=360
+stall=70
+env=VITA_BENCH=1
+env=RCFG_probes=1
+env=RCFG_section_timers=1
+env=HP1_EXEC=12:@console.MenuBook RunURL Lev5_Chess;80:@console.MenuBook RunURL Lev5_Final;150:@console.MenuBook RunURL Lev4_Sneak2;200:@get harry0 Location;230:@memory;232:exit

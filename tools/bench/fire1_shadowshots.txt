@@ -1,0 +1,9 @@
+# Lev2_Fire1: a burst of screenshots 0.05 s apart, to see the shadows of moving actors
+timeout=200
+arg=--level=Lev2_Fire1
+arg=--slot=5
+env=HP1_GOD=1
+env=HP1_SKIPCUTS=1
+env=HP1_SHOT_DIR=ux0:data/flipendo
+env=HP1_SHOTS=60,60.1,60.2,60.3,60.4,60.5
+env=HP1_EXEC=62:exit

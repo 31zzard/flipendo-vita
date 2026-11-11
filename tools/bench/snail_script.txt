@@ -1,0 +1,8 @@
+# Lev2_Fire1: what the snails' physics is (properties, script)
+timeout=200
+stall=60
+arg=--level=Lev2_Fire1
+arg=--slot=5
+env=HP1_GOD=1
+env=HP1_SKIPCUTS=1
+env=HP1_EXEC=50:@get Snail5 Physics;50.2:@get Snail5 CollisionRadius;50.4:@get Snail5 CollisionHeight;50.6:@get Snail5 bCollideWorld;50.8:@get Snail5 bBlockActors;51:@get Snail5 GroundSpeed;51.2:@get Snail5 Velocity;51.4:@get Snail5 bCollideActors;51.6:@get Snail5 StateName;52:@script Snail Tick;53:@script Snail Touch;54:@script Snail Bump;55:@script Snail HitWall;56:@script Snail Timer;57:exit

@@ -1,0 +1,9 @@
+# Grandstaircase_hub --url with GSTATE050, no cutscene skipping: does the heap still run out? heap_probe on
+timeout=300
+stall=120
+arg=--saveslot=6
+arg=--url=Grandstaircase_hub.unr
+arg=--gamestate=GSTATE050
+env=VITA_BENCH=1
+env=RCFG_heap_probe=1
+env=HP1_EXEC=50:@memory;52:exit

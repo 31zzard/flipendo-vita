@@ -1,0 +1,4 @@
+# FELevSelectPage's scripts
+timeout=120
+stall=40
+env=HP1_EXEC=12:@script HPMenu.FELevSelectPage Notify;12:@script HPMenu.FELevSelectPage LoadLevel;14:exit

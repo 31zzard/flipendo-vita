@@ -1,11 +1,12 @@
 // The on-screen frame counter of the Vita build (top left corner), apply_fixes.sh #86.
 //
-// Modes (render.cfg overlay=, the mode at start; default 1):
+// Modes (render.cfg fps_counter=, the mode at start; default 0; the older key overlay= counts when fps_counter is not there):
 //   0  off
 //   1  frames per second, the slowest frame of the last half second, the average frame time
 //   2  the same and where the time goes: engine (level tick = scripts, physics), picture (bsp info, visibility walk, drawing
 //      by step), meshes/particles/light maps, procedural textures (water), uploads, surfaces and draw calls, heap, map and position
-// A tap with two fingers on the REAR touch pad goes to the next mode (off -> FPS -> full -> off).
+// A tap with two fingers on the REAR touch pad goes to the next mode (off -> FPS -> full -> off), only when render.cfg asks for a
+// counter (fps_counter 1 or 2): with 0 there is none at all.
 //
 // The numbers are averages over half a second, from sums that never reset (VitaTimers::total, VitaStats::total*): the 120-frame
 // log lines keep working as before. Drawing costs ~0.3 ms (a few hundred glyph tiles, batched), and nothing at all when off.
@@ -40,6 +41,7 @@
 namespace
 {
 	int mode = -1;   // -1: not read from render.cfg yet
+	bool rearTouch = false;   // the rear pad may switch the counter: only when render.cfg's fps_counter is not 0
 	bool touchStarted = false;
 	bool twoFingersDown = false;
 
@@ -63,6 +65,9 @@ namespace
 	// Two fingers put on the rear touch pad: the next mode
 	void PollRearTouch()
 	{
+		// A bench run keeps its mode: a console lying on its back touches the pad (07 Nov: the VitaBench lines stopped mid-run)
+		if (benchLog)
+			return;
 		if (!touchStarted)
 		{
 			touchStarted = true;
@@ -159,14 +164,16 @@ void VitaDrawOverlay()
 {
 	if (mode < 0)
 	{
-		mode = std::clamp(VitaConfigInt("overlay", 1), 0, 2);
+		mode = std::clamp(VitaConfigInt("fps_counter", VitaConfigInt("overlay", 0)), 0, 2);
 		const char* bench = getenv("VITA_BENCH");
 		benchLog = bench && *bench && *bench != '0';
+		rearTouch = mode != 0;   // fps_counter=0: off for good, the rear pad can't switch it on
 		if (benchLog)
 			mode = 2;   // the full set of numbers, on the screen and in the log
 	}
 	const int oldMode = mode;
-	PollRearTouch();
+	if (rearTouch)
+		PollRearTouch();
 
 	const double now = NowMs();
 	if (mode == 0)

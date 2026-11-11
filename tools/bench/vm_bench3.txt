@@ -1,0 +1,8 @@
+# Tick costs called directly (@bench) in Lev3_Intro
+timeout=200
+stall=50
+arg=--level=Lev3_Intro
+arg=--slot=5
+env=HP1_GOD=1
+env=HP1_SKIPCUTS=1
+env=HP1_EXEC=50:@bench LampPost Tick 5000;52:@bench ActorShadow Tick 5000;54:exit

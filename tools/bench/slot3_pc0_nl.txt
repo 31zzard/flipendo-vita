@@ -1,0 +1,9 @@
+# The user's save in slot 3 (Lev_Tut3, the big open spot where the frame rate drops), loaded from the title menu; 15 s standing,
+# 15 s turning the camera slowly, quit. Probes and section timers.
+timeout=260
+stall=50
+env=VITA_BENCH=1
+env=RCFG_fps_lock=0
+env=RCFG_point_cache=0
+env=HP1_MOUSE=58:25:0:15
+env=HP1_EXEC=15:@console.MenuBook.SlotPage SetSelectedSlot 3;16:@console.MenuBook.SlotPage LoadSelectedSlot;43:@get harry0 Location;58:@get harry0 Rotation;74:exit

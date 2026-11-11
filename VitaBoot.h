@@ -8,6 +8,8 @@
 #include <psp2/kernel/processmgr.h>
 #include <cstdint>
 #include <cstdio>
+#include <malloc.h>
+#include <psp2/kernel/sysmem.h>
 #include <string>
 #include "Utils/Logger.h"
 
@@ -19,9 +21,14 @@ inline void VitaBootMark(const std::string& what)
 	const uint64_t now = sceKernelGetProcessTimeWide();
 	uint64_t bytes = 0, micros = 0;
 	VitaFileCounters(bytes, micros);
-	char text[200];
-	snprintf(text, sizeof(text), ": at %.2f s, +%.0f ms (card: %.1f MB in %.0f ms)", now / 1000000.0, (now - lastTime) / 1000.0,
-		(bytes - lastBytes) / 1048576.0, (micros - lastMicros) / 1000.0);
+	char text[300];
+	struct mallinfo info = mallinfo();
+	SceKernelFreeMemorySizeInfo freeMem = {};
+	freeMem.size = sizeof(freeMem);
+	sceKernelGetFreeMemorySize(&freeMem);
+	snprintf(text, sizeof(text), ": at %.2f s, +%.0f ms (card: %.1f MB in %.0f ms; heap %.1f MB; system free: main %.1f, cdram %.1f, phycont %.1f MB)",
+		now / 1000000.0, (now - lastTime) / 1000.0, (bytes - lastBytes) / 1048576.0, (micros - lastMicros) / 1000.0, info.uordblks / 1048576.0,
+		freeMem.size_user / 1048576.0, freeMem.size_cdram / 1048576.0, freeMem.size_phycont / 1048576.0);
 	LogMessage("Boot: " + what + text);
 	lastTime = now;
 	lastBytes = bytes;

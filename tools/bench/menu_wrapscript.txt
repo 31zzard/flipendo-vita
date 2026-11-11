@@ -1,0 +1,8 @@
+# UWindowWrappedTextArea's scripts
+timeout=150
+stall=40
+arg=--level=Lev_Tut1
+arg=--slot=5
+env=HP1_GOD=1
+env=HP1_SKIPCUTS=1
+env=HP1_EXEC=30:@script UWindow.UWindowWrappedTextArea Paint;30:@script UWindow.UWindowWrappedTextArea WrapClipText;30:@script UWindow.UWindowWrappedTextArea ClipText;30:@script UWindow.UWindowWrappedTextArea BeforePaint;30:@script UWindow.UWindowWrappedTextArea SetText;30:@script UWindow.UWindowDialogControl TextSize;30:@script UWindow.UWindowWindow TextSize;30:@script UWindow.UWindowWindow ClipText;30:@script UWindow.UWindowWindow WrapClipText;30:@script HPMenu.FEFolioPage Paint;30:@script HPMenu.FEFolioPage BeforePaint;30:@script HPMenu.FEFolioPage Created;30:@script HPMenu.FEFolioPage UpdateDisplayDetails;32:exit

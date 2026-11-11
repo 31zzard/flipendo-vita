@@ -31,6 +31,22 @@
 #include <vitaGL.h>
 #include <psp2/kernel/threadmgr.h>
 #include <psp2/kernel/processmgr.h>
+#include <psp2/display.h>
+
+// The display's vblank count when the last frame went to the screen (VitaRenderDevice.cpp's display callback, vglSetDisplayCallback)
+inline volatile uint32_t vitaShownVcount = 0;
+
+// fps_lock=30 without the swap interval 2 of vitaGL (eglSwapInterval 2 kept ~3 frames in flight: 100 ms from a frame's start, when
+// its input is read, to its showing, against 36 ms at interval 1; the camera on the stick lagged): a frame is handed to vitaGL (at
+// interval 1) no sooner than two refreshes after the one before it, so each is shown for two refreshes. A late frame goes at once.
+inline uint32_t vitaLastHandedVcount = 0;   // the vblank count when the last frame was handed over (no function-local static: the GL thread)
+inline void VitaPaceTwoRefreshes()
+{
+	if (vitaLastHandedVcount != 0)
+		while ((int)(sceDisplayGetVcount() - vitaLastHandedVcount) < 2)
+			sceDisplayWaitVblankStart();
+	vitaLastHandedVcount = sceDisplayGetVcount();
+}
 #else
 #include <vitaGL.h>   // vita/tests/pcstub: a recording stand-in
 #include <chrono>
@@ -65,7 +81,11 @@ namespace VitaGL
 	inline uint32_t FloatBits(float f) { uint32_t u; std::memcpy(&u, &f, 4); return u; }
 	inline float BitsFloat(uint32_t u) { float f; std::memcpy(&f, &u, 4); return f; }
 
-	// Memory for one frame's data: blocks that never move (a pointer handed out stays good until Reset)
+	// Memory for one frame's data: blocks that never move (a pointer handed out stays good until Reset).
+	// 2026-11-07 (HP2 crash, bad_alloc after ~1 min among particles): a request bigger than a block got its own block at the end of
+	// the list and moved 'current' onto it, so the next small request found no room and added ANOTHER regular block, while the kept
+	// blocks it had skipped stayed unused; Reset kept every regular block: the list grew every frame with a big batch (~4 MB/s
+	// turning in Adv1Willow's rain). Big requests now live in a list of their own (freed at Reset) and leave 'current' alone.
 	class Arena
 	{
 	public:
@@ -73,11 +93,21 @@ namespace VitaGL
 		{
 			for (Block& b : blocks)
 				std::free(b.data);
+			for (uint8_t* p : bigBlocks)
+				std::free(p);
 		}
 
 		void* Alloc(size_t bytes)
 		{
 			bytes = (bytes + 15) & ~(size_t)15;
+			if (bytes > BlockSize)
+			{
+				uint8_t* p = (uint8_t*)std::malloc(bytes);
+				if (!p)
+					throw std::bad_alloc();
+				bigBlocks.push_back(p);
+				return p;
+			}
 			while (current < blocks.size())
 			{
 				Block& b = blocks[current];
@@ -89,35 +119,29 @@ namespace VitaGL
 				}
 				current++;
 			}
-			const size_t size = bytes > BlockSize ? bytes : BlockSize;
 			Block b;
-			b.data = (uint8_t*)std::malloc(size);
+			b.data = (uint8_t*)std::malloc(BlockSize);
 			if (!b.data)
 				throw std::bad_alloc();
-			b.size = size;
+			b.size = BlockSize;
 			b.used = bytes;
 			blocks.push_back(b);
 			current = blocks.size() - 1;
 			return b.data;
 		}
 
-		// Everything is free again; blocks bigger than usual (a large texture) are given back
+		// Everything is free again; the big requests' memory is given back
 		void Reset()
 		{
-			size_t kept = 0;
 			for (Block& b : blocks)
-			{
-				if (b.size > BlockSize)
-				{
-					std::free(b.data);
-					continue;
-				}
 				b.used = 0;
-				blocks[kept++] = b;
-			}
-			blocks.resize(kept);
+			for (uint8_t* p : bigBlocks)
+				std::free(p);
+			bigBlocks.clear();
 			current = 0;
 		}
+
+		size_t BlockCount() const { return blocks.size(); }
 
 	private:
 		static constexpr size_t BlockSize = 256 * 1024;
@@ -128,6 +152,7 @@ namespace VitaGL
 			size_t used = 0;
 		};
 		std::vector<Block> blocks;
+		std::vector<uint8_t*> bigBlocks;
 		size_t current = 0;
 	};
 
@@ -260,7 +285,8 @@ namespace VitaGL
 			c.p = Keep(indices, (size_t)count * sizeof(uint16_t));
 		}
 		// the picture is done: present it (without the thread the caller presents it itself)
-		void Swap() { if (threaded) Add(OpSwap); }
+		// interval: the vertical blanks a frame stays on the screen (2: 30 fps on the Vita's 60 Hz screen; 0: no waiting)
+		void Swap(int interval = 1) { if (threaded) { Cmd& c = Add(OpSwap); c.i[0] = interval; } }
 
 		// A copy of data that a later command reads, alive until the thread is done with the frame (the data itself without the thread)
 		const void* Keep(const void* data, size_t bytes)
@@ -382,6 +408,15 @@ namespace VitaGL
 				case OpSwap:
 				{
 					const double started = NowUs();
+					static int swapInterval = -1;
+					const int wanted = (int)c.i[0] >= 2 ? 1 : (int)c.i[0];   // 2: paced here (VitaPaceTwoRefreshes), vitaGL at 1
+					if (wanted != swapInterval)
+					{
+						swapInterval = wanted;
+						eglSwapInterval(0, swapInterval);   // fps_lock: render.cfg
+					}
+					if ((int)c.i[0] >= 2)
+						VitaPaceTwoRefreshes();
 					vglSwapBuffers(GL_TRUE);   // what SDL_GL_SwapWindow does (VITA_GLES_SwapWindow), without its check of the calling thread
 					if (swapUs)
 						*swapUs += NowUs() - started;

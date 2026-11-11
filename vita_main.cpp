@@ -16,6 +16,7 @@
 #include "VitaConfig.h"
 #include <algorithm>
 
+#include <psp2/io/fcntl.h>
 #include <psp2/io/stat.h>
 #include <psp2/kernel/processmgr.h>
 #include <psp2/kernel/threadmgr.h>
@@ -30,6 +31,7 @@ int VitaProfileStart();
 #include <cstdlib>
 #include <exception>
 #include <string>
+#include <vitaGL.h>
 
 extern "C"
 {
@@ -210,8 +212,25 @@ namespace
 	}
 }
 
+// HP1's own debug mode (HPConsole.bDebugMode: the title menu's Level Select, Language, Credits and Version buttons), set on the
+// console when the engine makes it (apply_fixes.sh #198). On in a build made with 'bash build.sh debug' (cmake VITA_GAME_DEBUG),
+// off in 'bash build.sh release' (the one to publish). The player's switch: render.cfg debug_mode=0/1 overrides either (the older
+// key game_debug still counts when debug_mode is not there).
+#ifndef VITA_GAME_DEBUG
+#define VITA_GAME_DEBUG 0
+#endif
+bool VitaGameDebug()
+{
+	static const bool on = VitaConfigInt("debug_mode", VitaConfigInt("game_debug", VITA_GAME_DEBUG)) != 0;
+	return on;
+}
+
 int main(int, char**)
 {
+	// render.cfg display_buffers: vitaGL's swap chain (3 by default: up to two finished frames wait for the screen, 33 ms each at
+	// fps_lock=30; 2 shows a frame one refresh period sooner). Before SDL makes the GL context (vglInit)
+	vglSetDisplayBufferCount(std::clamp(VitaConfigInt("display_buffers", 3), 2, 3));
+
 	// Full speed: 444 MHz CPU, 222 MHz GPU
 	scePowerSetArmClockFrequency(444);
 	scePowerSetBusClockFrequency(222);
@@ -240,6 +259,21 @@ int main(int, char**)
 	if (!FolderExists(gameFolder + "/" VITA_GAME_EXE))
 		Log(("no " VITA_GAME_EXE " in " + gameFolder + ": copy the PC game to " + Root + "/" VITA_GAME_FOLDER "/").c_str());
 	Log(("game: " + gameFolder).c_str());
+
+#ifndef VITA_HP2
+	// The save slot page shows Save/SGS <level>.bmp for each slot (FESlotPage.UpdateSlots), DefaultGameSnap.bmp when that is missing
+	if (!FolderExists(gameFolder + "/Save/DefaultGameSnap.bmp"))
+		Log(("no save slot pictures in " + gameFolder + "/Save: copy the PC game's Save folder (SGS *.bmp) there").c_str());
+#endif
+
+	// The engine writes an ini as <name>.new and then puts it in place (vita-atomicini, apply_fixes.sh #214). The app closed
+	// between the two steps leaves only the .new: it holds every setting, so it becomes the ini.
+	for (const char* ini : { "SE-HP.ini", "SE-User.ini", "SE-Game.ini" })
+	{
+		std::string path = gameFolder + "/System/" + ini;
+		if (!FolderExists(path) && FolderExists(path + ".new") && sceIoRename((path + ".new").c_str(), path.c_str()) >= 0)
+			Log(("settings: " + path + " taken from its .new (the app was closed while writing it)").c_str());
+	}
 
 	// In the profiling build the engine runs a little below the sampler (priority 0x40 is the highest a user thread may have)
 #ifdef VITA_PROFILE

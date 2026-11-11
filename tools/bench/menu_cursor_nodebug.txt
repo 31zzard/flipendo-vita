@@ -1,0 +1,8 @@
+# The title menu: the mouse moved (stick raw moves), pictures before and after: does the cursor move?
+timeout=120
+stall=40
+env=HP1_MOUSE=22:15:8:2
+env=HP1_SHOT_DIR=ux0:data/flipendo
+env=HP1_SHOTS=20,26
+env=RCFG_game_debug=0
+env=HP1_EXEC=30:exit

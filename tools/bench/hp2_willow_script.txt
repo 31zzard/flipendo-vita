@@ -1,0 +1,7 @@
+# hp2_willow: the Tick functions of the classes the level tick spends on (@script), no timing
+timeout=200
+stall=90
+arg=--saveslot=5
+arg=--loadgame=0
+env=HP1_KEYS=30:Enter:0.2
+env=HP1_EXEC=40:@script HogFrontTorch_WithFlame0 Tick;40.2:@script Mover3 Tick;40.4:@script TriggerLight4 Tick;40.6:@script WillowWisps8 Tick;40.8:@script GenericColObj7 Tick;41:@script BaseCam4 Tick;41.2:@script ActorShadow86 Tick;41.4:@script Harry0 PlayerTick;42:exit

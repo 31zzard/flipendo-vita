@@ -1,0 +1,7 @@
+# Lev_Tut1 with its opening (Dumbledore walks): shadow debug lines
+timeout=200
+stall=60
+arg=--level=Lev_Tut1
+arg=--slot=5
+env=HP1_GOD=1
+env=HP1_EXEC=70:exit

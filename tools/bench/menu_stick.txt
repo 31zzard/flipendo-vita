@@ -1,0 +1,6 @@
+# The title menu, the real right stick moved by the host (vitacompanion 'press right-stick X Y') after the first picture
+timeout=120
+stall=40
+env=HP1_SHOT_DIR=ux0:data/flipendo
+env=HP1_SHOTS=20,34
+env=HP1_EXEC=38:exit

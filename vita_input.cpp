@@ -1,9 +1,10 @@
 // Vita input for the SDL2 window.
 //
-//   left stick     walk (the arrow keys)
-//   right stick    mouse cursor in the menus, camera in the game
+//   left stick     walk (the arrow keys); in the menus and while a spell lesson is drawn it is a second right stick
+//   right stick    mouse cursor in the menus, camera in the game, the wand in a spell lesson
 //   cross, R       left mouse button (select in the menus, cast the spell in the game)
 //   circle, L      right mouse button (jump)
+//   front touch    in the menus (title menu, pause menu): the finger is the mouse, touching = left button held
 //   d-pad, square, triangle, start, select: keys, see GameControllerButtonToInputKey in sdl2_display_window.cpp
 //
 // The engine's menus follow the *absolute* mouse position (Engine::OnWindowMouseMove). On a Vita that position
@@ -12,9 +13,17 @@
 // These functions are called from sdl2_display_window.cpp through small hooks added by apply_fixes.sh.
 
 #include "sdl2_display_window.h"
+#include "VitaConfig.h"
+#include <psp2/touch.h>
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
+
+// Set by the engine every frame (Engine::TickWindow, apply_fixes.sh #217): a UWindow menu shows its mouse (title and pause menus).
+// HP1 keeps the cursor 'locked' there too, so CursorLocked can't tell.
+bool VitaMenuMouse = false;
+// Set by VitaTickSpellLesson: a spell lesson's Draw state is running (the wand follows the mouse)
+bool VitaWandDrawing = false;
 
 namespace
 {
@@ -26,13 +35,29 @@ namespace
 	double rawRemainderY = 0.0;
 	SDL_GameController* pad = nullptr;
 
-	int leftHeld = 0;    // how many buttons hold the left mouse button down (cross and R)
+	int leftHeld = 0;    // how many buttons hold the left mouse button down (cross, R and a finger in the menus)
 	int rightHeld = 0;   // ... the right mouse button (circle and L)
 	bool stickKeyDown[4] = {};   // up, down, left, right, pressed by the left stick
+	bool touchHeld = false;      // a finger on the front screen holds the left mouse button (menus)
 
 	// pixels per second at full stick, and mouse counts per second at full stick (camera)
 	const double CursorSpeed = 520.0;
-	const double CameraSpeed = 900.0;
+
+	// Measured 2026-11-11 (bench cam_speed, Lev_Tut1): 900 counts a second turned the camera ~126 degrees a second at the
+	// options page's highest Mouse Sensitivity (10) and ~38 at the default (3): too slow. 2700 (3x) was too fast
+	// for the user; 1350 (1.5x) gives ~57 / 95 / 190 degrees a second at 3 / 5 / 10. render.cfg camera_speed (percent of 1350,
+	// 25..400) for players who want it otherwise.
+	double CameraSpeed()
+	{
+		static const double speed = 1350.0 * std::clamp(VitaConfigInt("camera_speed", 100), 25, 400) / 100.0;
+		return speed;
+	}
+
+	// The camera's response: a little tilt turns slowly (aiming), full tilt turns at CameraSpeed
+	double CameraCurve(double v)
+	{
+		return v * std::sqrt(std::abs(v));
+	}
 	const double WalkThreshold = 0.35;
 
 	SDL2DisplayWindow* FirstWindow()
@@ -75,13 +100,53 @@ namespace
 		return Point(cursorX / uiscale, cursorY / uiscale);
 	}
 
+	// The front touch screen in the menus. SDL turns no touch into mouse clicks here, so buttons and sliders of the title and pause
+	// menus did not react to a finger. While a UWindow menu shows its mouse (VitaMenuMouse) the finger
+	// moves the cursor and holds the left mouse button: a tap clicks, a drag drags a slider, lifting releases it (the options
+	// page's sliders take their value at that release). In the game the touch is left to the spell lessons.
+	// render.cfg menu_touch=0 turns it off.
+	void TouchInMenus(SDL2DisplayWindow* window, int width, int height)
+	{
+		static const bool on = VitaConfigInt("menu_touch", 1) != 0;
+		static bool sampling = false;
+		if (!on)
+			return;
+		if (!sampling)
+		{
+			sceTouchSetSamplingState(SCE_TOUCH_PORT_FRONT, SCE_TOUCH_SAMPLING_STATE_START);
+			sampling = true;
+		}
+
+		SceTouchData touch = {};
+		bool finger = VitaMenuMouse && sceTouchPeek(SCE_TOUCH_PORT_FRONT, &touch, 1) > 0 && touch.reportNum > 0;
+		if (finger)
+		{
+			cursorX = std::clamp(touch.report[0].x * 0.5, 0.0, (double)(width - 1));   // the front panel is 1920 x 1088
+			cursorY = std::clamp(touch.report[0].y * 0.5, 0.0, (double)(height - 1));
+			window->WindowHost->OnWindowMouseMove(CursorPoint(window));
+			if (!touchHeld)
+			{
+				touchHeld = true;
+				if (leftHeld++ == 0)
+					window->WindowHost->OnWindowMouseDown(CursorPoint(window), InputKey::LeftMouse);
+			}
+		}
+		else if (touchHeld)
+		{
+			touchHeld = false;
+			if (leftHeld > 0 && --leftHeld == 0)
+				window->WindowHost->OnWindowMouseUp(CursorPoint(window), InputKey::LeftMouse);
+		}
+	}
+
 	// The left stick presses the arrow keys: forward, back, left, right
-	void WalkWithLeftStick(SDL2DisplayWindow* window, SDL_GameController* controller)
+	// (walking false: the stick is the mouse now; keys it holds are let go)
+	void WalkWithLeftStick(SDL2DisplayWindow* window, SDL_GameController* controller, bool walking)
 	{
 		static const InputKey keys[4] = { InputKey::Up, InputKey::Down, InputKey::Left, InputKey::Right };
 
-		double lx = Axis(controller, SDL_CONTROLLER_AXIS_LEFTX);
-		double ly = Axis(controller, SDL_CONTROLLER_AXIS_LEFTY);
+		double lx = walking ? Axis(controller, SDL_CONTROLLER_AXIS_LEFTX) : 0.0;
+		double ly = walking ? Axis(controller, SDL_CONTROLLER_AXIS_LEFTY) : 0.0;
 		bool want[4] = { ly < -WalkThreshold, ly > WalkThreshold, lx < -WalkThreshold, lx > WalkThreshold };
 
 		for (int i = 0; i < 4; i++)
@@ -133,14 +198,24 @@ void VitaPollPad()
 	double dt = std::min((now - lastTicks) / 1000.0, 0.1);
 	lastTicks = now;
 
+	TouchInMenus(window, width, height);
+
 	SDL_GameController* controller = GetPad();
 	if (!controller)
 		return;
 
-	WalkWithLeftStick(window, controller);
+	// In the menus and while a spell lesson is drawn the left stick does what the right one does (the right one wins when both are
+	// pushed); otherwise it walks
+	const bool leftIsMouse = VitaMenuMouse || VitaWandDrawing;
+	WalkWithLeftStick(window, controller, !leftIsMouse);
 
 	double rx = Axis(controller, SDL_CONTROLLER_AXIS_RIGHTX);
 	double ry = Axis(controller, SDL_CONTROLLER_AXIS_RIGHTY);
+	if (rx == 0.0 && ry == 0.0 && leftIsMouse)
+	{
+		rx = Axis(controller, SDL_CONTROLLER_AXIS_LEFTX);
+		ry = Axis(controller, SDL_CONTROLLER_AXIS_LEFTY);
+	}
 	if (rx == 0.0 && ry == 0.0)
 		return;
 
@@ -152,8 +227,8 @@ void VitaPollPad()
 	// The camera: relative movement, when the engine has locked the cursor (in the game)
 	if (window->CursorLocked)
 	{
-		rawRemainderX += rx * CameraSpeed * dt;
-		rawRemainderY += ry * CameraSpeed * dt;
+		rawRemainderX += CameraCurve(rx) * CameraSpeed() * dt;
+		rawRemainderY += CameraCurve(ry) * CameraSpeed() * dt;
 		int dx = (int)rawRemainderX;
 		int dy = (int)rawRemainderY;
 		rawRemainderX -= dx;

@@ -1,0 +1,6 @@
+# Title menu, OPTIONS page, screenshots; the host drags the sensitivity slider by touch in between; then exit
+timeout=150
+stall=200
+env=HP1_SHOT_DIR=ux0:data/flipendo
+env=HP1_SHOTS=30,45,60
+env=HP1_EXEC=8:@console.MenuBook ChangePageNamed OPTIONS;70:exit

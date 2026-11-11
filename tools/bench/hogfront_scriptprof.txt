@@ -1,0 +1,12 @@
+# Lev2_HogFront started by --level (save slot 5), opening cutscenes skipped; 15 s standing, 15 s turning (the same mouse movement every run), quit
+timeout=240
+arg=--level=Lev2_HogFront
+arg=--slot=5
+env=VITA_BENCH=1
+env=RCFG_probes=1
+env=RCFG_script_profile=1
+env=RCFG_section_timers=1
+env=HP1_GOD=1
+env=HP1_SKIPCUTS=1
+env=HP1_MOUSE=75:25:0:15
+env=HP1_EXEC=58:@get harry0 Location;75:@get harry0 Rotation;91:exit

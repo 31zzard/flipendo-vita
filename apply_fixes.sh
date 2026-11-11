@@ -4760,4 +4760,2382 @@ for rel in ("../../knowwonder/KWSave.cpp", "../../hp2/HP2Persist.cpp"):
                                  '#else\n#define VITA_COPY_FILE fs::copy_file\n#endif\n'),
          'vita-copyfile')
 
+
+# 122. HP2's Adv1Willow (bench hp2_willow, 06 Nov): 'procedural textures' 22 ms of a 67 ms frame, inside 'node: texture' and
+#      'node: detail/macro': WaterDE2 (WaveTexture) ~19 ms a picture, liquid7 (WetTexture) ~9 ms, on the main thread. The water
+#      pictures are now made on a thread of their own (vita/VitaWaterJobs.h, cores 1+2, priority 160): UTexture::Update queues the
+#      step and shows the picture the thread finished (one picture late); the thread writes into its own picture, copied into
+#      the texture's level 0 on the main thread. render.cfg water_thread=0: the old way. The log's procedural textures then show
+#      '<name> on the water thread' (the thread's time) next to the main thread's copy.
+edit("Packages/Engine/Resources/Textures/UWaterTexture.cpp",
+     re.escape("void UWaterTexture::UpdateFrame()\n{\n\tif (!TextureModified)\n"),
+     lambda m: ("void UWaterTexture::UpdateFrame()\n{\n#ifdef __vita__ // vita-wthread-guard: the water thread makes its picture anyway\n"
+                "\tif (!TextureModified || VitaWater::OnJob(this))\n#else\n\tif (!TextureModified)\n#endif\n"),
+     'vita-wthread-guard')
+edit("Packages/Engine/Resources/Textures/UWaterTexture.cpp",
+     re.escape("\t\tuint8_t* pixels = (uint8_t*)mipmap.Data.data();\n\n#ifdef __vita__ // vita-shade-planar\n"),
+     lambda m: m.group(0).replace("\n\n#ifdef", "\n#ifdef __vita__ // vita-wthread-out\n\t\tpixels = VitaWater::Output(this, pixels);\n#endif\n\n#ifdef", 1),
+     'vita-wthread-out')
+edit("Packages/Engine/Resources/Textures/UWaterTexture.cpp",
+     re.escape("\t\tTextureModified = true;\n\t}\n}\n\nvoid UWaterTexture::UpdateWater()"),
+     lambda m: ("#ifdef __vita__ // vita-wthread-mod: the main thread sets it when it takes the picture\n\t\tif (!VitaWater::OnJob(this))\n#endif\n"
+                + m.group(0)),
+     'vita-wthread-mod')
+edit("Packages/Engine/Resources/Textures/UWaterTexture.cpp",
+     re.escape("\t\tif ((++vitaSteps & 127) == 100 && vitaChecks < 4)\n"),
+     lambda m: "\t\tif ((++vitaSteps & 127) == 100 && vitaChecks < 4 && !VitaWater::OnJob(this)) // vita-wthread-nocheck (logs, allocates)\n",
+     'vita-wthread-nocheck')
+edit("Packages/Engine/Resources/Textures/UWetTexture.cpp",
+     re.escape("void UWetTexture::UpdateFrame()\n{\n\tif (!TextureModified)\n"),
+     lambda m: ("void UWetTexture::UpdateFrame()\n{\n#ifdef __vita__ // vita-wthread-wguard\n"
+                "\tif (!TextureModified || VitaWater::OnJob(this))\n#else\n\tif (!TextureModified)\n#endif\n"),
+     'vita-wthread-wguard')
+edit("Packages/Engine/Resources/Textures/UWetTexture.cpp",
+     re.escape("\t\t\tuint8_t* pixels = (uint8_t*)mipmap.Data.data();\n"),
+     lambda m: m.group(0) + "#ifdef __vita__ // vita-wthread-wout\n\t\t\tpixels = VitaWater::Output(this, pixels);\n#endif\n",
+     'vita-wthread-wout')
+edit("Packages/Engine/Resources/Textures/UWetTexture.cpp",
+     re.escape("\t\tTextureModified = true;\n\t}\n}"),
+     lambda m: "#ifdef __vita__ // vita-wthread-wmod\n\t\tif (!VitaWater::OnJob(this))\n#endif\n" + m.group(0),
+     'vita-wthread-wmod')
+edit("Packages/Engine/Resources/Textures/UTexture.cpp",
+     re.escape('#include "UWaterTexture.h" // vita-waterfps-inc\n'),
+     lambda m: m.group(0) + '#include "VitaWaterJobs.h" // vita-wthread-inc\n',
+     'vita-wthread-inc')
+edit("Packages/Engine/Resources/Textures/UTexture.cpp",
+     re.escape("#ifdef __vita__ // vita-textime: the time of the new pictures, by texture\n"),
+     lambda m: ("#ifdef __vita__ // vita-wthread-update: water on its own thread (VitaWaterJobs.h)\n"
+                "\tif (VitaWaterJobs::Enabled() && !UsedMipmaps.empty() && dynamic_cast<UWaterTexture*>(this))\n\t{\n"
+                "\t\tUnrealMipmap& level0 = UsedMipmaps.front();\n"
+                "\t\tVitaWaterJobs::Job* job = VitaWaterJobs::JobFor(this, [](void* t) { ((UTexture*)t)->UpdateFrame(); }, (const uint8_t*)level0.Data.data(), level0.Data.size(), level0.Width, level0.Height);\n"
+                "\t\tif (job)\n\t\t{\n"
+                "\t\t\tconst double vitaStart = VitaTimers::Now();\n"
+                "\t\t\tbool took = false;\n"
+                "\t\t\tif (job->status.load(std::memory_order_acquire) == 2)\n\t\t\t{\n"
+                "\t\t\t\tstd::memcpy(level0.Data.data(), job->picture.data(), std::min(level0.Data.size(), job->picture.size()));\n"
+                "\t\t\t\tTextureModified = true;\n"
+                "\t\t\t\tjob->status.store(0, std::memory_order_relaxed);\n"
+                "\t\t\t\ttook = true;\n"
+                "\t\t\t\tVitaTimers::TexTime& w = VitaTimers::texTimes[(const char*)this + 1];\n"
+                "\t\t\t\tif (w.name.empty())\n\t\t\t\t\tw.name = Name.ToString() + \" \" + std::to_string(level0.Width) + \"x\" + std::to_string(level0.Height) + \" on the water thread\";\n"
+                "\t\t\t\tw.ms += job->ms;\n\t\t\t\tw.updates++;\n"
+                "\t\t\t\tVitaTimers::TexTime& d = VitaTimers::texTimes[(const char*)this + 2];\n"
+                "\t\t\t\tif (d.name.empty())\n\t\t\t\t\td.name = Name.ToString() + \" queued to done\";\n"
+                "\t\t\t\td.ms += job->waitMs;\n\t\t\t\td.updates++;\n\t\t\t}\n"
+                "\t\t\tbool due = false;\n"
+                "\t\t\tfor (int iteration = 0; Accumulator() > animationSpeed; iteration++)\n\t\t\t{\n"
+                "\t\t\t\tdue = true;\n\t\t\t\tAccumulator() -= animationSpeed;\n"
+                "\t\t\t\tif (iteration == 10)\n\t\t\t\t{\n\t\t\t\t\tAccumulator() = 0.0f;\n\t\t\t\t\tbreak;\n\t\t\t\t}\n\t\t\t}\n"
+                "\t\t\tif (due && job->status.load(std::memory_order_relaxed) == 0)\n\t\t\t\tVitaWaterJobs::Queue(job);\n"
+                "\t\t\tif (took)\n\t\t\t{\n"
+                "\t\t\t\tconst double t = VitaTimers::Now() - vitaStart;\n"
+                "\t\t\t\tVitaTimers::ms[VitaTimers::TexUpdate] += t;\n\t\t\t\tVitaTimers::total[VitaTimers::TexUpdate] += t;\n"
+                "\t\t\t\tVitaTimers::TexTime& e = VitaTimers::texTimes[this];\n"
+                "\t\t\t\tif (e.name.empty())\n\t\t\t\t\te.name = Name.ToString() + \" (\" + Class->Name.ToString() + \")\";\n"
+                "\t\t\t\te.ms += t;\n\t\t\t\te.updates++;\n\t\t\t}\n"
+                "\t\t\treturn;\n\t\t}\n\t}\n#endif\n" + m.group(0)),
+     'vita-wthread-update')
+
+
+# 124. HP1_DUMP also lists the entry level's actors ('HP1 dump entry ...'): HP2's 'ticks by class' had two harry, BaseCam and
+#      GameReplicationInfo ticks a frame with one of each in the level.
+edit("../../knowwonder/KWDebug.cpp",
+     re.escape("\t\t\tLogMessage(buf);\n\t\t}\n\t}\n\n\t// A property of the actor's class, or null"),
+     lambda m: ("\t\t\tLogMessage(buf);\n\t\t}\n"
+                "\t\tif (engine->EntryLevel && engine->EntryLevel != engine->Level) // vita-dump-entry\n"
+                "\t\t\tfor (UActor* a : engine->EntryLevel->Actors)\n\t\t\t{\n"
+                "\t\t\t\tif (!a)\n\t\t\t\t\tcontinue;\n"
+                "\t\t\t\tLogMessage(\"HP1 dump entry \" + a->Class->Name.ToString() + \" \" + a->Name.ToString() + \" state=\" + a->GetStateName().ToString() +\n"
+                "\t\t\t\t\t(a->bStatic() ? \" static\" : \"\") + (a->bDeleteMe() ? \" deleted\" : \"\"));\n\t\t\t}\n"
+                "\t}\n\n\t// A property of the actor's class, or null"),
+     'vita-dump-entry')
+
+
+# 125. HP2's Entry.unr has a Harry placed in it: he, his BaseCam, StatusManager (a dozen HUD items), shadow, anim channels and the
+#      entry's GameReplicationInfo tick every frame (HP1_DUMP 'HP1 dump entry', #124), unseen. The entry level is now ticked every
+#      entry_tick_rate frames (render.cfg, default 10; 1 = every frame as before, 0 = never) with the time gathered since.
+edit("Engine.cpp",
+     re.escape("\t\t\t\tif (EntryLevel && EntryLevel != Level)\n\t\t\t\t\tEntryLevel->Tick(entryStepElapsed, m_GamePaused);\n"),
+     lambda m: ("#ifdef __vita__ // vita-entrytick\n"
+                "\t\t\t\tif (EntryLevel && EntryLevel != Level)\n\t\t\t\t{\n"
+                "\t\t\t\t\tstatic const int vitaEntryRate = VitaConfigInt(\"entry_tick_rate\", 10);\n"
+                "\t\t\t\t\tstatic int vitaEntryFrames = 0;\n\t\t\t\t\tstatic float vitaEntryElapsed = 0.0f;\n"
+                "\t\t\t\t\tvitaEntryElapsed += entryStepElapsed;\n"
+                "\t\t\t\t\tif (vitaEntryRate > 0 && ++vitaEntryFrames >= vitaEntryRate)\n\t\t\t\t\t{\n"
+                "\t\t\t\t\t\tVITA_TIMER(EntryTick);\n"
+                "\t\t\t\t\t\tEntryLevel->Tick(std::min(vitaEntryElapsed, 0.5f), m_GamePaused);\n"
+                "\t\t\t\t\t\tvitaEntryFrames = 0;\n\t\t\t\t\t\tvitaEntryElapsed = 0.0f;\n\t\t\t\t\t}\n\t\t\t\t}\n"
+                "#else\n" + m.group(0) + "#endif\n"),
+     'vita-entrytick')
+
+
+# 126. HP2's Adv1Willow turning: 'particles' 12.8 ms a frame (stand 1.6). Laps in KW::DrawParticleSystem: update, setup, draw,
+#      and the number of particles of the systems drawn ('particles: count' calls).
+PR = "../../knowwonder/KWParticleRender.cpp"
+edit(PR, re.escape('#include "VitaTimers.h" // vita-timers:include\n'),
+     lambda m: m.group(0) + '#include "VitaProbes.h" // vita-pfxlaps-inc\n', 'vita-pfxlaps-inc')
+edit(PR, re.escape("\t\tVITA_TIMER(Particles); // vita-timers:particles\n\t\tif (!UpdateParticleSystem(actor, 0.0f))\n\t\t\treturn;\n"),
+     lambda m: ("\t\tVITA_TIMER(Particles); // vita-timers:particles\n\t\tVITA_LAP_START; // vita-pfxstart\n"
+                "\t\tconst bool vitaUpdated = UpdateParticleSystem(actor, 0.0f);\n\t\tVITA_LAP(PfxUpdate);\n\t\tif (!vitaUpdated)\n\t\t\treturn;\n"),
+     'vita-pfxstart')
+edit(PR, re.escape("\t\tctx.LightColor = PFX::LightColor(actor);\n\n\t\tswitch (primitive)\n"),
+     lambda m: ("\t\tctx.LightColor = PFX::LightColor(actor);\n\t\tVITA_LAP(PfxSetup); // vita-pfxlaps-setup\n"
+                "#ifdef __vita__\n\t\tif (VitaProbes::enabled)\n\t\t\tVitaProbes::calls[VitaProbes::PfxCount] += (unsigned)state->Particles.size();\n#endif\n"
+                "\n\t\tswitch (primitive)\n"),
+     'vita-pfxlaps-setup')
+edit(PR, re.escape("\t\t\tbreak;\n\t\t}\n\t\tengine->render->Stats.Actors++;\n"),
+     lambda m: "\t\t\tbreak;\n\t\t}\n\t\tVITA_LAP(PfxDraw); // vita-pfxlaps-draw\n\t\tengine->render->Stats.Actors++;\n",
+     'vita-pfxlaps-draw')
+
+edit(PR, re.escape("\t\t\tctx.Frame->Device->DrawGouraudPolygon(&ctx.Frame->Frame, ctx.Texinfo, vertices, count, ctx.PolyFlags);\n"),
+     lambda m: "\t\t\tVITA_PROBE(PfxDevice); // vita-pfxdevice\n" + m.group(0), 'vita-pfxdevice')
+
+
+# 127. Adv1Willow turning (#126 laps): 1491 particles drawn as 2862 DrawGouraudPolygon calls (a liquid system draws its liquid
+#      and billboard passes): 'particles: draw' ~9.5 ms. Not the calls: memory. The Vita's CPU copies at ~0.4 GB/s ('polygons:
+#      keep copy' 693 KB in 1.8 ms) and each particle vertex went through GouraudVertex (52 bytes written and read), a zeroing
+#      resize and the batch vertex (36) before the GL thread's copy. Now the device gives the system room in its batch
+#      (RenderDevice::VitaBeginTriangles, an upper bound: 6 vertices per quad pass, 3 for a shard) and the passes write the batch
+#      vertices themselves (same vertices, same order, one SwitchBatch per system); VitaRenderDevice's batch resizes without
+#      zeroing (VitaNoInitAlloc).
+edit("RenderDevice/RenderDevice.h",
+     re.escape("\t\t\tDrawGouraudPolygon(Frame, Info, Pts + i * 3, 3, PolyFlags);\n\t}\n#endif\n"),
+     lambda m: (m.group(0) + "#ifdef __vita__ // vita-appendtris\n"
+                "\t// Room for up to maxVerts triangle vertices (9 floats: x y z u v r g b a) in the device's batch, or null (then draw with\n"
+                "\t// DrawGouraud*). params (4 floats out): u and v multipliers, the light multiplier, 1 when the colour is ignored (modulated).\n"
+                "\t// VitaEndTriangles(the vertices written) closes it.\n"
+                "\tvirtual float* VitaBeginTriangles(SceneNode* Frame, TextureInfo& Info, uint32_t PolyFlags, int maxVerts, float* params) { return nullptr; }\n"
+                "\tvirtual void VitaEndTriangles(int usedVerts) {}\n#endif\n"),
+     'vita-appendtris')
+edit(PR, re.escape("\t\t\tvec4 LightColor = vec4(1.0f);\n"),
+     lambda m: m.group(0) + ("#ifdef __vita__ // vita-pfxtris-ctx\n"
+                             "\t\t\tfloat* VitaOut = nullptr;      // the device's batch (VitaBeginTriangles), 9 floats a vertex\n"
+                             "\t\t\tint VitaUsed = 0, VitaMax = 0;  // vertices written, room\n"
+                             "\t\t\tfloat VitaParams[4] = {};       // u, v multipliers, light multiplier, modulated\n#endif\n"),
+     'vita-pfxtris-ctx')
+edit(PR, re.escape("\t\t\tGouraudVertex vertices[4];\n\t\t\tfor (int i = 0; i < count; i++)\n"),
+     lambda m: ("#ifdef __vita__ // vita-pfxtris-add: the fan (0, i - 1, i) as the device's DrawGouraudPolygon makes it\n"
+                "\t\t\tif (ctx.VitaOut)\n\t\t\t{\n"
+                "\t\t\t\tif (ctx.VitaUsed + (count - 2) * 3 > ctx.VitaMax)\n\t\t\t\t\treturn;   // cannot happen: the room is an upper bound\n"
+                "\t\t\t\tconst float um = ctx.UMax * ctx.VitaParams[0], vm = ctx.VMax * ctx.VitaParams[1];\n"
+                "\t\t\t\tconst bool mod = ctx.VitaParams[3] != 0.0f;\n"
+                "\t\t\t\tconst float lm = ctx.VitaParams[2];\n"
+                "\t\t\t\tfloat* out = ctx.VitaOut + (size_t)ctx.VitaUsed * 9;\n"
+                "\t\t\t\tfor (int i = 2; i < count; i++)\n\t\t\t\t{\n"
+                "\t\t\t\t\tconst int corner[3] = { 0, i - 1, i };\n"
+                "\t\t\t\t\tfor (int k : corner)\n\t\t\t\t\t{\n"
+                "\t\t\t\t\t\tout[0] = points[k].x; out[1] = points[k].y; out[2] = points[k].z;\n"
+                "\t\t\t\t\t\tout[3] = uvs[k].x * um; out[4] = uvs[k].y * vm;\n"
+                "\t\t\t\t\t\tout[5] = mod ? 1.0f : lights[k].x * lm; out[6] = mod ? 1.0f : lights[k].y * lm; out[7] = mod ? 1.0f : lights[k].z * lm;\n"
+                "\t\t\t\t\t\tout[8] = 1.0f;\n\t\t\t\t\t\tout += 9;\n\t\t\t\t\t}\n\t\t\t\t}\n"
+                "\t\t\t\tctx.VitaUsed += (count - 2) * 3;\n"
+                "\t\t\t\treturn;\n\t\t\t}\n#endif\n" + m.group(0)),
+     'vita-pfxtris-add')
+edit(PR, re.escape("\t\tVITA_LAP(PfxSetup); // vita-pfxlaps-setup\n"),
+     lambda m: (m.group(0) + "#ifdef __vita__ // vita-pfxtris-start\n"
+                "\t\t{\n"
+                "\t\t\tint perParticle = 6;   // billboard or shell\n"
+                "\t\t\tif (primitive == PPRIM_Line)\n\t\t\t\tperParticle += 6 + 3 + 6;\n"
+                "\t\t\telse if (primitive == PPRIM_Shard)\n\t\t\t\tperParticle += 3 + 6;\n"
+                "\t\t\telse if (primitive == PPRIM_Liquid)\n\t\t\t\tperParticle += 6;\n"
+                "\t\t\tctx.VitaMax = (int)state->Particles.size() * perParticle;\n"
+                "\t\t\tctx.VitaOut = frame->Device->VitaBeginTriangles(&frame->Frame, ctx.Texinfo, ctx.PolyFlags, ctx.VitaMax, ctx.VitaParams);\n"
+                "\t\t}\n#endif\n"),
+     'vita-pfxtris-start')
+edit(PR, re.escape("\t\tVITA_LAP(PfxDraw); // vita-pfxlaps-draw\n"),
+     lambda m: ("#ifdef __vita__ // vita-pfxtris-draw\n"
+                "\t\tif (ctx.VitaOut)\n\t\t\tframe->Device->VitaEndTriangles(ctx.VitaUsed);\n#endif\n" + m.group(0)),
+     'vita-pfxtris-draw')
+
+
+# 128. '@script <actor> <function>' (HP1_EXEC): the function as the engine's pretty printer shows it (DisassemblyCommandlet's
+#      PrintPrettyExpression), from the actor's class and its parents (or 'console', or a class 'Package.Class'), in the class
+#      and in every state: HP2's scripts are
+#      stripped, and the Tick events of its torches, movers and lights are what its level tick spends.
+edit("../../knowwonder/KWDebug.cpp",
+     re.escape('#include "Packages/Core/UClass.h"\n'),
+     lambda m: m.group(0) + ('#include "Packages/Core/UFunction.h" // vita-script-inc\n#include "Packages/Core/UState.h"\n'
+                             '#include "VM/Bytecode.h"\n#include "Commandlet/VM/DisassemblyCommandlet.h"\n'),
+     'vita-script-inc')
+edit("../../knowwonder/KWDebug.cpp",
+     re.escape('\t\tif (text.rfind("@hull ", 0) == 0)\n'),
+     lambda m: ('\t\tif (text.rfind("@script ", 0) == 0) // vita-script-cmd\n\t\t{\n'
+                '\t\t\tstd::istringstream in(text.substr(8));\n\t\t\tstd::string actorName, funcName;\n\t\t\tin >> actorName >> funcName;\n'
+                '\t\t\tUObject* actor = nullptr;\n'
+                '\t\t\tUClass* startClass = nullptr;\n'
+                '\t\t\tif (actorName == "console")\n\t\t\t\tactor = engine->console;\n'
+                '\t\t\telse if (actorName.find(\'.\') != std::string::npos)\n\t\t\t\tstartClass = engine->packages->FindClass(actorName);\n'
+                '\t\t\telse\n'
+                '\t\t\t\tfor (UActor* a : engine->Level->Actors)\n\t\t\t\t\tif (a && a->Name.ToString() == actorName)\n\t\t\t\t\t{\n\t\t\t\t\t\tactor = a;\n\t\t\t\t\t\tbreak;\n\t\t\t\t\t}\n'
+                '\t\t\tif (actor)\n\t\t\t\tstartClass = actor->Class;\n'
+                '\t\t\tif (!startClass)\n\t\t\t{\n\t\t\t\tLogMessage("HP1 script: no actor or class " + actorName);\n\t\t\t\treturn;\n\t\t\t}\n'
+                '\t\t\tauto print = [&](const std::string& where, UFunction* func)\n\t\t\t{\n'
+                '\t\t\t\tLogMessage("HP1 script " + where + "." + funcName + (func->Code ? "" : " (no code)"));\n'
+                '\t\t\t\tif (!func->Code)\n\t\t\t\t\treturn;\n'
+                '\t\t\t\tfor (Expression* expr : func->Code->Statements)\n\t\t\t\t{\n'
+                '\t\t\t\t\tstd::string line;\n'
+                '\t\t\t\t\tPrintPrettyExpression::Print([&](const std::string& t) { line += t; }, expr);\n'
+                '\t\t\t\t\tLogMessage("HP1 script   " + line);\n\t\t\t\t}\n\t\t\t};\n'
+                '\t\t\tconst NameString wanted(funcName);\n'
+                '\t\t\tfor (UStruct* s = startClass; s; s = s->BaseStruct)\n\t\t\t{\n'
+                '\t\t\t\tUClass* cls = dynamic_cast<UClass*>(s);\n\t\t\t\tif (!cls)\n\t\t\t\t\tcontinue;\n'
+                '\t\t\t\tauto f = cls->Functions.find(wanted);\n'
+                '\t\t\t\tif (f != cls->Functions.end() && f->second)\n\t\t\t\t\tprint(cls->Name.ToString(), f->second);\n'
+                '\t\t\t\tfor (auto& st : cls->States)\n\t\t\t\t{\n'
+                '\t\t\t\t\tif (!st.second)\n\t\t\t\t\t\tcontinue;\n'
+                '\t\t\t\t\tauto g = st.second->Functions.find(wanted);\n'
+                '\t\t\t\t\tif (g != st.second->Functions.end() && g->second)\n'
+                '\t\t\t\t\t\tprint(cls->Name.ToString() + ".state " + st.first.ToString(), g->second);\n'
+                '\t\t\t\t}\n\t\t\t}\n'
+                '\t\t\tLogMessage("HP1 script: end; state " + (actor ? actor->GetStateName().ToString() : std::string("-")));\n'
+                '\t\t\treturn;\n\t\t}\n' + m.group(0)),
+     'vita-script-cmd')
+
+
+# 129. HP2's level tick (Adv1Willow, 'tick: Tick event' 16 us a call, 415 a frame): most Tick events are a few lines that start
+#      with Super.Tick, which ends in Actor.Tick, an empty function (@script, #128: HPawn.Tick of 50 torches, 28 wisps, 24
+#      collision objects; Mover.Tick of 42 movers). A script function whose whole code is 'return' without a value, with no
+#      return value or out parameter, does nothing: Frame::Call returns at once (no frame, locals, arguments). Worked out once per
+#      function (UStruct::VitaEmptyFunc). Log: 'script: empty calls skipped' (laps line, calls a frame).
+edit("Packages/Core/UStruct.h",
+     re.escape("\tint8_t VitaTrivialLocals = -1; // vita-trivial-field: every property a plain value (1), not (0), unknown (-1)\n"),
+     lambda m: m.group(0) + "\tint8_t VitaEmptyFunc = -1; // vita-emptyfunc-field: the code is a bare 'return' and nothing comes back (1), not (0), unknown (-1)\n",
+     'vita-emptyfunc-field')
+edit("VM/Frame.cpp",
+     re.escape('#include "VitaFuncCache.h" // vita-funccache-inc\n'),
+     lambda m: m.group(0) + '#include "VitaProbes.h" // vita-emptyfunc-inc\n',
+     'vita-emptyfunc-inc')
+edit("VM/Frame.cpp",
+     re.escape("\telse\n\t{\n\t\t// While a singular function runs on an object, every singular call on that object is skipped"),
+     lambda m: ("\telse\n\t{\n#ifdef __vita__ // vita-emptyfunc-skip\n"
+                "\t\tif (func->VitaEmptyFunc < 0)\n\t\t{\n"
+                "\t\t\tbool empty = func->Code && func->Code->Statements.size() == 1 && func->Code->Statements[0] &&\n"
+                "\t\t\t\tfunc->Code->Statements[0]->Type == ExpressionType::Return;\n"
+                "\t\t\tif (empty)\n\t\t\t{\n"
+                "\t\t\t\tExpression* value = static_cast<ReturnExpression*>(func->Code->Statements[0])->Value;\n"
+                "\t\t\t\tempty = !value || value->Type == ExpressionType::Nothing;\n\t\t\t}\n"
+                "\t\t\tfor (UProperty* prop : func->Properties)\n"
+                "\t\t\t\tif (AllFlags(prop->PropFlags, PropertyFlags::ReturnParm) || AllFlags(prop->PropFlags, PropertyFlags::OutParm))\n"
+                "\t\t\t\t\tempty = false;\n"
+                "\t\t\tfunc->VitaEmptyFunc = empty ? 1 : 0;\n\t\t}\n"
+                "\t\tif (func->VitaEmptyFunc == 1)\n\t\t{\n"
+                "\t\t\tif (VitaProbes::enabled)\n\t\t\t\tVitaProbes::calls[VitaProbes::EmptySkip]++;\n"
+                "\t\t\treturn ExpressionValue::NothingValue();\n\t\t}\n#endif\n"
+                + m.group(0)[len("\telse\n\t{\n"):]),
+     'vita-emptyfunc-skip')
+
+
+# 130. Every native operator of a script (+=, <, ==, vector math: most statements have a few) went through Frame::Call: the
+#      event table lookup (IsEventEnabled by name), TraceCall, then CallNative with a whole Frame (VM variable stack, the call
+#      stack entry) for two or three ExpressionValues. A native function with the Operator flag and at most 8 properties now
+#      runs its handler on an ExpressionValue array on the C++ stack, filled and read back exactly as CallNative does
+#      (UStruct::VitaFastOp, worked out once). Log: 'script: operators without a frame' (laps line, calls a frame).
+edit("Packages/Core/UStruct.h",
+     re.escape("\tint8_t VitaEmptyFunc = -1; // vita-emptyfunc-field"),
+     lambda m: "\tint8_t VitaFastOp = -1; // vita-fastop-field: a native operator called without a Frame (1), not (0), unknown (-1)\n" + m.group(0),
+     'vita-fastop-field')
+edit("VM/Frame.cpp",
+     re.escape("\tTraceCall(func, instance, args);\n\n\tif (!instance->IsEventEnabled(func->Name))\n"),
+     lambda m: ("#ifdef __vita__ // vita-fastop-call\n"
+                "\tif (func->VitaFastOp < 0)\n"
+                "\t\tfunc->VitaFastOp = (AllFlags(func->FuncFlags, FunctionFlags::Native) && AllFlags(func->FuncFlags, FunctionFlags::Operator) &&\n"
+                "\t\t\tfunc->NativeFuncIndex != 0 && func->Properties.size() <= 8) ? 1 : 0;\n"
+                "\tif (func->VitaFastOp == 1)\n\t{\n"
+                "\t\tif (VitaProbes::enabled)\n\t\t\tVitaProbes::calls[VitaProbes::FastOp]++;\n"
+                "\t\tExpressionValue frameArgs[8];\n"
+                "\t\tint argindex = 0, resultIndex = -1;\n"
+                "\t\tfor (UProperty* prop : func->Properties)\n\t\t{\n"
+                "\t\t\tif (!AllFlags(prop->PropFlags, PropertyFlags::Parm))\n\t\t\t\tcontinue;\n"
+                "\t\t\tif (AllFlags(prop->PropFlags, PropertyFlags::ReturnParm))\n\t\t\t{\n"
+                "\t\t\t\tif (resultIndex < 0)\n\t\t\t\t\tresultIndex = argindex;\n"
+                "\t\t\t\tframeArgs[argindex++] = ExpressionValue::PropertyValue(prop);\n\t\t\t}\n"
+                "\t\t\telse if (argindex < (int)args.size())\n\t\t\t{\n"
+                "\t\t\t\tif (args[argindex].GetType() == ExpressionValueType::Nothing && AllFlags(prop->PropFlags, PropertyFlags::OutParm) && !AllFlags(prop->PropFlags, PropertyFlags::OptionalParm))\n"
+                "\t\t\t\t\tframeArgs[argindex] = ExpressionValue::DefaultValue(prop);\n"
+                "\t\t\t\telse\n\t\t\t\t\tframeArgs[argindex] = args[argindex];\n"
+                "\t\t\t\targindex++;\n\t\t\t}\n"
+                "\t\t\telse\n\t\t\t\tframeArgs[argindex++] = ExpressionValue::NothingValue();\n\t\t}\n"
+                "\t\ttry\n\t\t{\n\t\t\tNativeFunctions::NativeByIndex[func->NativeFuncIndex](instance, frameArgs);\n\t\t}\n"
+                "\t\tcatch (const std::exception& e)\n\t\t{\n\t\t\tLogMessage(std::string(\"Script error: \") + e.what());\n\t\t\treturn ExpressionValue::NothingValue();\n\t\t}\n"
+                "\t\tcatch (...)\n\t\t{\n\t\t\tLogMessage(\"Script error: Unknown error\");\n\t\t\treturn ExpressionValue::NothingValue();\n\t\t}\n"
+                "\t\treturn resultIndex >= 0 ? frameArgs[resultIndex] : ExpressionValue::NothingValue();\n\t}\n#endif\n"
+                + m.group(0)),
+     'vita-fastop-call')
+
+
+# 131. HP2's in-game menus (UWindow: Options, Save/Load) showed no mouse cursor on the Vita. The engine says a Windows mouse is
+#      available when the game runs in a window (Engine::Run), and then UWindowRootWindow.DrawMouse leaves the cursor to the
+#      operating system (none on a Vita). The original ran fullscreen by default, where UWindow draws its own cursor and moves it
+#      by the mouse's IK_MouseX/IK_MouseY deltas (the stick's raw moves, vita_input.cpp, sent while the cursor is locked).
+edit("Engine.cpp",
+     re.escape("\tif (engine->LaunchInfo.ue1Version > 219 && !client->StartupFullscreen)\n\t\tviewport->bWindowsMouseAvailable() = true;\n"),
+     lambda m: ("#ifdef __vita__ // vita-hp2-swcursor: HP2's menus draw their own cursor (as in the original's fullscreen)\n"
+                "\tif (engine->LaunchInfo.ue1Version > 219 && !client->StartupFullscreen && !engine->LaunchInfo.IsHarryPotter2())\n"
+                "\t\tviewport->bWindowsMouseAvailable() = true;\n#else\n" + m.group(0) + "#endif\n"),
+     'vita-hp2-swcursor')
+
+#      HPConsole.state UWindow.KeyEvent hands the mouse's deltas to its menu book first, which takes them, so a drawn cursor did
+#      not move; HPConsole.RenderUWindow reads the position only from Viewport.WindowsMouseX/Y when a Windows mouse is available.
+#      The stick's (and the touch screen's) absolute position is therefore written into the console's MouseX/MouseY as that
+#      would: WindowsMouseX / Root.GUIScale.
+edit("Engine.cpp",
+     re.escape("\t\tif (LaunchInfo.IsKnowWonder()) // into the menu canvas (src/knowwonder/KWCanvas.cpp)\n\t\t\tKW::MenuMousePosition(viewport->WindowsMouseX(), viewport->WindowsMouseY());\n"),
+     lambda m: (m.group(0) + "#ifdef __vita__ // vita-hp2-mousepos\n"
+                "\t\tif (LaunchInfo.IsHarryPotter2() && console && console->HasProperty(\"MouseX\") && console->HasProperty(\"Root\"))\n\t\t{\n"
+                "\t\t\tUObject* root = console->GetUObject(\"Root\");\n"
+                "\t\t\tfloat scale = root && root->HasProperty(\"GUIScale\") ? root->GetFloat(\"GUIScale\") : 1.0f;\n"
+                "\t\t\tif (scale <= 0.0f)\n\t\t\t\tscale = 1.0f;\n"
+                "\t\t\tconsole->SetFloat(\"MouseX\", viewport->WindowsMouseX() / scale);\n"
+                "\t\t\tconsole->SetFloat(\"MouseY\", viewport->WindowsMouseY() / scale);\n\t\t}\n#endif\n"),
+     'vita-hp2-mousepos')
+
+
+# 132. Particle update laps: 'particles: bounce trace' (KW::UpdateParticle's level trace for particles with Elasticity).
+PFXF = "../../knowwonder/KWParticleFX.cpp"
+edit(PFXF, re.escape('#include <cstdio>   // vita-particles:include'),
+     lambda m: m.group(0) + '\n#include "VitaProbes.h" // vita-pfxbounce-inc', 'vita-pfxbounce-inc')
+edit(PFXF, re.escape("\t\t\tif (PFX::Elasticity(a) > 0.0f && p.OldPosition != p.Position)\n\t\t\t{\n"),
+     lambda m: m.group(0) + "\t\t\t\tVITA_PROBE(PfxBounce); // vita-pfxbounce\n", 'vita-pfxbounce')
+
+
+# 133. Particles, per particle work that was per system: (a) every PFX::<property>(a) went through GetParticleFXProps()
+#      (another file, a function-local static and a check), ~15 times a particle in UpdateParticle: the offsets are now read
+#      through an inline pointer set once (VitaPfxProps); (b) ParticleLight asked IsHP2(), Opacity / ScaleGlow and Style for
+#      every particle of every pass: the system's alpha and Modulated flag are worked out once in DrawParticleSystem.
+edit("../../knowwonder/KWParticleFX.h",
+     re.escape("\t\tinline const ParticleFXProps& P() { return GetParticleFXProps(); }\n"),
+     lambda m: ("#ifdef __vita__ // vita-pfxprops-fast\n\t\tinline const ParticleFXProps* VitaPfxProps = nullptr;   // set by GetParticleFXProps once it has them\n"
+                "\t\tinline const ParticleFXProps& P() { return VitaPfxProps ? *VitaPfxProps : GetParticleFXProps(); }\n#else\n"
+                + m.group(0) + "#endif\n"),
+     'vita-pfxprops-fast')
+edit(PFXF, re.escape("\t\t\tProps = &props;\n"),
+     lambda m: m.group(0) + "#ifdef __vita__ // vita-pfxprops-set\n\t\t\tPFX::VitaPfxProps = &props;\n#endif\n",
+     'vita-pfxprops-set')
+edit(PR, re.escape("\t\t\tvec4 LightColor = vec4(1.0f);\n"),
+     lambda m: m.group(0) + ("#ifdef __vita__ // vita-pfxlight-ctx\n"
+                             "\t\t\tfloat VitaSysAlpha = 1.0f;      // HP2: Opacity, HP1: ScaleGlow (once per system)\n"
+                             "\t\t\tbool VitaModulated = false;     // Style == STY_Modulated\n#endif\n"),
+     'vita-pfxlight-ctx')
+edit(PR, re.escape("\t\t\tfloat alpha = (IsHP2() ? Opacity(ctx.Actor) : ctx.Actor->ScaleGlow()) * p.Alpha;\n\t\t\tif (alpha < 1.0f)\n\t\t\t{\n\t\t\t\tlight *= alpha;\n\t\t\t\tif (ctx.Actor->Style() == STY_Modulated)\n"),
+     lambda m: ("#ifdef __vita__ // vita-pfxlight-use\n"
+                "\t\t\tfloat alpha = ctx.VitaSysAlpha * p.Alpha;\n\t\t\tif (alpha < 1.0f)\n\t\t\t{\n\t\t\t\tlight *= alpha;\n\t\t\t\tif (ctx.VitaModulated)\n"
+                "#else\n" + m.group(0) + "#endif\n"),
+     'vita-pfxlight-use')
+edit(PR, re.escape("\t\tctx.LightColor = PFX::LightColor(actor);\n"),
+     lambda m: m.group(0) + ("#ifdef __vita__ // vita-pfxlight-set\n"
+                             "\t\tctx.VitaSysAlpha = IsHP2() ? Opacity(actor) : actor->ScaleGlow();\n"
+                             "\t\tctx.VitaModulated = actor->Style() == STY_Modulated;\n#endif\n"),
+     'vita-pfxlight-set')
+
+
+# 134. Adv1Willow's torch flames (FireHP2_bigtorch1, spinning billboards): ~37 us a particle to draw against ~2 us for plain
+#      billboards. A particle's Spin only grows (Spin += dt * SpinRate, never wrapped) and std::cos / std::sin of a large float
+#      take newlib's slow argument reduction. The billboard pass now turns the angle into [-pi, pi] first (std::remainder by
+#      2 pi): the same cosine and sine to float precision.
+edit(PR, re.escape("\t\t\t\t\tfloat c = std::cos(p.Spin);\n\t\t\t\t\tfloat s = std::sin(p.Spin);\n"),
+     lambda m: ("#ifdef __vita__ // vita-pfxspin\n"
+                "\t\t\t\t\tconst float spin = std::fabs(p.Spin) > 3.14159265f ? std::remainder(p.Spin, 6.28318531f) : p.Spin;\n"
+                "\t\t\t\t\tfloat c = std::cos(spin);\n\t\t\t\t\tfloat s = std::sin(spin);\n#else\n" + m.group(0) + "#endif\n"),
+     'vita-pfxspin')
+
+
+# 135. render.cfg script_profile=1: Frame::Call times every script function it runs (and the natives it calls, not operators),
+#      inclusive, by function; the log's 'script functions by time' lists the biggest. For HP2's Harry: 7.3 ms a frame walking
+#      (2 standing), all of it his PlayerTick / PlayerInput scripts.
+edit("VM/Frame.cpp",
+     re.escape("\tTraceCall(func, instance, args);\n\n\tif (!instance->IsEventEnabled(func->Name))\n"),
+     lambda m: ("#ifdef __vita__ // vita-scriptprof\n"
+                "\tif (VitaProbes::scriptProfile < 0)\n\t\tVitaProbes::scriptProfile = VitaConfigInt(\"script_profile\", 0) != 0 ? 1 : 0;\n"
+                "\tstruct VitaFuncTimer\n\t{\n"
+                "\t\tUFunction* func = nullptr;\n\t\tuint64_t start = 0;\n\t\tstd::string cls;\n"
+                "\t\t~VitaFuncTimer()\n\t\t{\n"
+                "\t\t\tif (!func)\n\t\t\t\treturn;\n"
+                "\t\t\tVitaProbes::FuncTime& e = VitaProbes::funcTimes[func];\n"
+                "\t\t\tif (e.name.empty())\n"
+                "\t\t\t\te.name = func->Name.ToString() + \" (\" + cls + \")\";\n"
+                "\t\t\te.us += (double)(VitaProbes::Now() - start);\n\t\t\te.calls++;\n\t\t}\n"
+                "\t} vitaFuncTimer;\n"
+                "\tif (VitaProbes::scriptProfile == 1)\n\t{\n\t\tvitaFuncTimer.cls = instance->Class->Name.ToString();\n\t\tvitaFuncTimer.func = func;\n\t\tvitaFuncTimer.start = VitaProbes::Now();\n\t}\n"
+                "#endif\n" + m.group(0)),
+     'vita-scriptprof')
+
+edit("VM/Frame.cpp", re.escape('#include "VitaProbes.h" // vita-emptyfunc-inc\n'),
+     lambda m: m.group(0) + '#include "VitaConfig.h" // vita-sprof-include\n', 'vita-sprof-include')
+
+
+# 136. HP2 walking (script_profile, #135): PlayFootStep ~10 ms a call, of which MakeNoise ~8 ms: every pawn of the level is asked
+#      CanHearNoise (HP2's torches, wisps, beans and props are pawns), with a level trace each. Probes first.
+edit("Packages/Engine/Actors/UActor.cpp",
+     re.escape("void UActor::MakeNoise(float loudness)\n{\n"),
+     lambda m: m.group(0) + "\tVITA_PROBE(NoiseAll); // vita-noiseprobe\n",
+     'vita-noiseprobe')
+edit("Packages/Engine/Actors/UActor.cpp",
+     re.escape("\t\tif (pawn != noisePawn && pawn->CanHearNoise(this, loudness))\n\t\t{\n\t\t\tCallEvent(pawn, EventName::HearNoise, { ExpressionValue::FloatValue(loudness), ExpressionValue::ObjectValue(this) });\n\t\t}\n"),
+     lambda m: ("#ifdef __vita__ // vita-noiseparts\n"
+                "\t\tif (pawn == noisePawn)\n\t\t\tcontinue;\n"
+                "\t\tbool vitaHears;\n\t\t{\n\t\t\tVITA_PROBE(NoiseHear);\n\t\t\tvitaHears = pawn->CanHearNoise(this, loudness);\n\t\t}\n"
+                "\t\tif (vitaHears)\n\t\t{\n\t\t\tVITA_PROBE(NoiseEvent);\n"
+                "\t\t\tCallEvent(pawn, EventName::HearNoise, { ExpressionValue::FloatValue(loudness), ExpressionValue::ObjectValue(this) });\n\t\t}\n"
+                "#else\n" + m.group(0) + "#endif\n"),
+     'vita-noiseparts')
+
+
+# 137. '@memory' (HP1_EXEC): every garbage-collected object's size plus the big arrays of textures, sounds, animations, meshes
+#      and the BSP, by class, and the biggest objects. HP2's Grandstaircase_hub takes ~150 MB of heap (92 -> 246 MB) and a second
+#      load of it (travel) runs out.
+edit("../../knowwonder/KWDebug.cpp",
+     re.escape('#include "Commandlet/VM/DisassemblyCommandlet.h"\n'),
+     lambda m: m.group(0) + ('#include "GC/GC.h" // vita-memory-inc\n#include "Packages/Engine/Resources/USound.h"\n'
+                             '#include "Packages/Engine/Resources/Mesh/UMesh.h"\n#include "Packages/Engine/Resources/Mesh/USkeletalMesh.h"\n'
+                             '#include "Packages/Engine/Resources/Mesh/UAnimation.h"\n#include <map>\n'),
+     'vita-memory-inc')
+edit("../../knowwonder/KWDebug.cpp",
+     re.escape('\t\tif (text.rfind("@script ", 0) == 0) // vita-script-cmd\n'),
+     lambda m: '\t\tif (text == "@memory") // vita-memory-cmd: where the heap goes, by class (the big arrays of resources counted)\n\t\t{\n\t\t\tstruct Use { size_t count = 0, bytes = 0; };\n\t\t\tstd::map<std::string, Use> byClass;\n\t\t\tstd::map<std::string, Use> byPackage;\n\t\t\tstd::vector<std::pair<size_t, std::string>> big;\n\t\t\tsize_t total = 0;\n\t\t\tfor (GCObject* gcobj : GC::GetObjects())\n\t\t\t{\n\t\t\t\tGCAllocation* alloc = ((GCAllocation*)gcobj) - 1;\n\t\t\t\tUObject* obj = dynamic_cast<UObject*>(gcobj);\n\t\t\t\tif (!obj || !obj->Class)\n\t\t\t\t\tcontinue;\n\t\t\t\tsize_t bytes = (size_t)alloc->memsize;\n\t\t\t\tif (auto tex = dynamic_cast<UTexture*>(obj))\n\t\t\t\t{\n\t\t\t\t\tfor (auto& m : tex->UsedMipmaps) bytes += m.Data.size();\n\t\t\t\t\tfor (auto& m : tex->UncompressedMipmaps) bytes += m.Data.size();\n\t\t\t\t\tfor (auto& m : tex->CompressedMipmaps) bytes += m.Data.size();\n\t\t\t\t}\n\t\t\t\telse if (auto snd = dynamic_cast<USound*>(obj))\n\t\t\t\t\tbytes += snd->Data.size() + snd->HP2ExtraData.size() + snd->samples.size() * sizeof(float);\n\t\t\t\telse if (auto anim = dynamic_cast<UAnimation*>(obj))\n\t\t\t\t{\n\t\t\t\t\tfor (auto& mv : anim->Moves)\n\t\t\t\t\t{\n\t\t\t\t\t\tbytes += mv.BoneIndices.size() * 4;\n\t\t\t\t\t\tfor (auto& t : mv.AnimTracks)\n\t\t\t\t\t\t\tbytes += t.KeyQuat.size() * sizeof(quaternion) + t.KeyPos.size() * sizeof(vec3) + t.KeyTime.size() * 4 + sizeof(AnimTrack);\n\t\t\t\t\t}\n\t\t\t\t}\n\t\t\t\telse if (auto mesh = dynamic_cast<UMesh*>(obj))\n\t\t\t\t{\n\t\t\t\t\tbytes += mesh->Verts.size() * sizeof(vec3) + mesh->Tris.size() * sizeof(MeshTri) + mesh->Connects.size() * sizeof(MeshVertConnect) +\n\t\t\t\t\t\tmesh->VertLinks.size() * 4 + mesh->Normals.size() * sizeof(vec3) + mesh->BoundingBoxes.size() * sizeof(BBox) + mesh->BoundingSpheres.size() * sizeof(vec4);\n\t\t\t\t\tif (auto skel = dynamic_cast<USkeletalMesh*>(obj))\n\t\t\t\t\t\tbytes += skel->ExtWedges.size() * sizeof(ExtMeshWedge) + skel->Points.size() * sizeof(vec3) + skel->LocalPoints.size() * sizeof(vec3) +\n\t\t\t\t\t\t\tskel->BoneWeights.size() * sizeof(BoneWeight) + skel->BoneWeightIndices.size() * sizeof(BoneWeightIndex);\n\t\t\t\t}\n\t\t\t\telse if (auto model = dynamic_cast<UModel*>(obj))\n\t\t\t\t\tbytes += model->Vectors.size() * sizeof(vec3) + model->Points.size() * sizeof(vec3) + model->Nodes.size() * sizeof(BspNode) +\n\t\t\t\t\t\tmodel->Surfaces.size() * sizeof(BspSurface) + model->Vertices.size() * sizeof(BspVert) + model->LightBits.size() + model->LightMap.size() * sizeof(LightMapIndex);\n\t\t\t\tUse& pu = byPackage[(obj->package ? obj->package->GetPackageName().ToString() : std::string("(none)")) + (obj->package == engine->LevelPackage ? std::string(" [current map]") : std::string())];\n\t\t\t\tpu.count++;\n\t\t\t\tpu.bytes += bytes;\n\t\t\t\tUse& u = byClass[obj->Class->Name.ToString()];\n\t\t\t\tu.count++;\n\t\t\t\tu.bytes += bytes;\n\t\t\t\ttotal += bytes;\n\t\t\t\tif (bytes > 512 * 1024)\n\t\t\t\t\tbig.push_back({ bytes, obj->Class->Name.ToString() + " " + obj->Name.ToString() });\n\t\t\t}\n\t\t\tstd::vector<std::pair<size_t, std::string>> classes;\n\t\t\tfor (auto& it : byClass)\n\t\t\t\tclasses.push_back({ it.second.bytes, it.first + " x" + std::to_string(it.second.count) });\n\t\t\tstd::sort(classes.rbegin(), classes.rend());\n\t\t\tstd::sort(big.rbegin(), big.rend());\n\t\t\tstd::string line = "HP1 memory: objects " + std::to_string(total / 1024) + " KB; by class:";\n\t\t\tfor (size_t i = 0; i < classes.size() && i < 20; i++)\n\t\t\t\tline += " " + classes[i].second + " " + std::to_string(classes[i].first / 1024) + " KB;";\n\t\t\tLogMessage(line);\n\t\t\t{\n\t\t\t\tstd::vector<std::pair<size_t, std::string>> pk;\n\t\t\t\tfor (auto& it : byPackage)\n\t\t\t\t\tpk.push_back({ it.second.bytes, it.first + " x" + std::to_string(it.second.count) });\n\t\t\t\tstd::sort(pk.rbegin(), pk.rend());\n\t\t\t\tstd::string pl = "HP1 memory: by package:";\n\t\t\t\tfor (size_t i = 0; i < pk.size() && i < 25; i++)\n\t\t\t\t\tpl += " " + pk[i].second + " " + std::to_string(pk[i].first / 1024) + " KB;";\n\t\t\t\tLogMessage(pl);\n\t\t\t}\n\t\t\tline = "HP1 memory: biggest:";\n\t\t\tfor (size_t i = 0; i < big.size() && i < 25; i++)\n\t\t\t\tline += " " + big[i].second + " " + std::to_string(big[i].first / 1024) + " KB;";\n\t\t\tLogMessage(line);\n\t\t\treturn;\n\t\t}\n' + m.group(0),
+     'vita-memory-cmd')
+
+
+# 137b. Trees patched by the first @memory: the by-package breakdown added (the first edit is skipped there by its marker).
+edit("../../knowwonder/KWDebug.cpp",
+     re.escape('\t\t\tstd::map<std::string, Use> byClass;\n'),
+     lambda m: m.group(0) + '\t\t\tstd::map<std::string, Use> byPackage;\n',
+     'std::map<std::string, Use> byPackage;')
+edit("../../knowwonder/KWDebug.cpp",
+     re.escape('\t\t\t\tUse& u = byClass['),
+     lambda m: ('\t\t\t\tUse& pu = byPackage[(obj->package ? obj->package->GetPackageName().ToString() : std::string("(none)")) + (obj->package == engine->LevelPackage ? std::string(" [current map]") : std::string())];\n'
+                '\t\t\t\tpu.count++;\n\t\t\t\tpu.bytes += bytes;\n') + m.group(0),
+     'Use& pu = byPackage[')
+edit("../../knowwonder/KWDebug.cpp",
+     re.escape('\t\t\tline = "HP1 memory: biggest:";\n'),
+     lambda m: ('\t\t\t{\n\t\t\t\tstd::vector<std::pair<size_t, std::string>> pk;\n\t\t\t\tfor (auto& it : byPackage)\n'
+                '\t\t\t\t\tpk.push_back({ it.second.bytes, it.first + " x" + std::to_string(it.second.count) });\n'
+                '\t\t\t\tstd::sort(pk.rbegin(), pk.rend());\n\t\t\t\tstd::string pl = "HP1 memory: by package:";\n'
+                '\t\t\t\tfor (size_t i = 0; i < pk.size() && i < 25; i++)\n'
+                '\t\t\t\t\tpl += " " + pk[i].second + " " + std::to_string(pk[i].first / 1024) + " KB;";\n'
+                '\t\t\t\tLogMessage(pl);\n\t\t\t}\n') + m.group(0),
+     '"HP1 memory: by package:"')
+
+
+# 138. heap_probe=1 also measures the heap's growth in every actor tick, by class (the 'ticks by class' line gets 'heap +N KB'):
+#      Grandstaircase_hub --url's level tick took 77 MB of heap in its first 120 frames.
+edit("Packages/Engine/Resources/Level/ULevel.cpp",
+     re.escape("\t\tVitaProbes::currentClass = &VitaProbes::classTimes[cls]; // vita-classsplit-start\n\t\tactor->Tick(elapsed);\n"),
+     lambda m: ("\t\tVitaProbes::currentClass = &VitaProbes::classTimes[cls]; // vita-classsplit-start\n"
+                "\t\tconst long long vitaHeap0 = VitaTimers::heapProbe == 1 ? VitaTimers::HeapInUse() : 0; // vita-classheap\n"
+                "\t\tactor->Tick(elapsed);\n"
+                "\t\tif (VitaTimers::heapProbe == 1)\n\t\t{\n\t\t\tconst long long vitaGrew = VitaTimers::HeapInUse() - vitaHeap0;\n"
+                "\t\t\tVitaProbes::classTimes[cls].heapBytes += vitaGrew;\n"
+                "\t\t\tif (vitaGrew > 256 * 1024)\n\t\t\t\tLogMessage(\"heap_probe: \" + actor->Name.ToString() + \" (\" + cls->Name.ToString() + \", state \" + actor->GetStateName().ToString() + \") tick +\" + std::to_string(vitaGrew / 1024) + \" KB\");\n\t\t}\n"),
+     'vita-classheap')
+
+edit("Packages/Engine/Resources/Level/ULevel.cpp", re.escape('#include "Precomp.h"\n'),
+     lambda m: m.group(0) + '#include "VitaTimers.h" // vita-classheap-include\n', 'vita-classheap-include')
+
+edit("Packages/Engine/Resources/Level/ULevel.cpp",
+     re.escape("\t\t\telse\n\t\t\t{\n\t\t\t\tTickActor(elapsed, actor);\n\t\t\t}\n\t\t}\n#else\n"),
+     lambda m: ("\t\t\telse\n\t\t\t{\n"
+                "\t\t\t\tconst long long vitaH0 = VitaTimers::heapProbe == 1 ? VitaTimers::HeapInUse() : 0; // vita-actorheap\n"
+                "\t\t\t\tTickActor(elapsed, actor);\n"
+                "\t\t\t\tif (VitaTimers::heapProbe == 1)\n\t\t\t\t{\n"
+                "\t\t\t\t\tconst long long vitaGrew = VitaTimers::HeapInUse() - vitaH0;\n"
+                "\t\t\t\t\tif (vitaGrew > 256 * 1024)\n"
+                "\t\t\t\t\t\tLogMessage(\"heap_probe: TickActor(\" + actor->Name.ToString() + \", \" + actor->Class->Name.ToString() + \", state \" + actor->GetStateName().ToString() + \") +\" + std::to_string(vitaGrew / 1024) + \" KB\");\n"
+                "\t\t\t\t}\n\t\t\t}\n\t\t}\n#else\n"),
+     'vita-actorheap')
+
+
+# 139. HP2's Grandstaircase_hub (GSTATE050): 37 jelly beans, 13 ms a frame of physics. A bean (an HProp, bBounce) rests in state
+#      BounceIntoPlace as PHYS_Falling, bouncing on the floor by nothing: HitWall halves and mirrors its velocity and nothing
+#      stops it (docs/re/engine/physics.md; Location exactly the same frame after frame, Velocity.Z 4 <-> 12). Such an actor
+#      (PHYS_Falling, bBounce, Location unchanged for 30 physics steps, speed < 20) is put to sleep: its physFalling is not run
+#      until its Location, Velocity, Physics, Base or script state changes (anything that touches it, a pickup, a spell).
+#      Nothing visible changes (it did not move); its HitWall events stop. Log: 'physics: resting bouncers skipped' (laps).
+PHYS = "../../knowwonder/KWPhysics.cpp"
+edit(PHYS,
+     re.escape("\tvoid PerformPhysics(UActor* actor, float deltaTime)\n\t{\n"),
+     lambda m: ("#ifdef __vita__ // vita-restbounce-helpers\n"
+                "\tstruct VitaRest { vec3 loc = vec3(0.0f); vec3 vel = vec3(0.0f); NameString state; UActor* base = nullptr; int frames = 0; bool asleep = false; };\n"
+                "\tstatic std::unordered_map<UActor*, VitaRest> vitaRests;\n"
+                "\tstatic bool VitaRestAsleep(UActor* actor)\n\t{\n"
+                "\t\tauto it = vitaRests.find(actor);\n"
+                "\t\tif (it == vitaRests.end() || !it->second.asleep)\n\t\t\treturn false;\n"
+                "\t\tVitaRest& r = it->second;\n"
+                "\t\tif (actor->Location() == r.loc && actor->Velocity() == r.vel && actor->ActorBase() == r.base && actor->GetStateName() == r.state)\n\t\t\treturn true;\n"
+                "\t\tr.asleep = false;\n\t\tr.frames = 0;\n\t\treturn false;\n\t}\n"
+                "\tstatic void VitaRestAfter(UActor* actor)\n\t{\n"
+                "\t\tVitaRest& r = vitaRests[actor];\n"
+                "\t\tconst vec3 v = actor->Velocity();\n"
+                "\t\tif (actor->Physics() == PHYS_Falling && actor->Location() == r.loc && dot(v, v) < 400.0f)\n"
+                "\t\t{\n\t\t\tif (++r.frames >= 30)\n\t\t\t{\n"
+                "\t\t\t\tr.asleep = true;\n\t\t\t\tr.vel = v;\n\t\t\t\tr.base = actor->ActorBase();\n\t\t\t\tr.state = actor->GetStateName();\n\t\t\t}\n\t\t}\n"
+                "\t\telse\n\t\t{\n\t\t\tr.frames = 0;\n\t\t\tr.loc = actor->Location();\n\t\t}\n\t}\n#endif\n\n"
+                + m.group(0)),
+     'vita-restbounce-helpers')
+edit(PHYS,
+     re.escape("\t\tcase PHYS_Falling: PhysFalling(actor, deltaTime, 0); break;\n"),
+     lambda m: ("#ifdef __vita__ // vita-restbounce: resting bouncers sleep\n"
+                "\t\tcase PHYS_Falling:\n"
+                "\t\t\tif (actor->bBounce())\n\t\t\t{\n"
+                "\t\t\t\tif (VitaRestAsleep(actor))\n\t\t\t\t{\n"
+                "\t\t\t\t\tif (VitaProbes::enabled)\n\t\t\t\t\t\tVitaProbes::calls[VitaProbes::RestSkip]++;\n"
+                "\t\t\t\t\tbreak;\n\t\t\t\t}\n"
+                "\t\t\t\tPhysFalling(actor, deltaTime, 0);\n"
+                "\t\t\t\tVitaRestAfter(actor);\n\t\t\t\tbreak;\n\t\t\t}\n"
+                "\t\t\tPhysFalling(actor, deltaTime, 0);\n\t\t\tbreak;\n"
+                "#else\n" + m.group(0) + "#endif\n"),
+     'vita-restbounce:')
+
+edit(PHYS, re.escape('#include "KWPhysics.h"\n'),
+     lambda m: m.group(0) + '#include "VitaProbes.h" // vita-restbounce-include\n#include <unordered_map>\n', 'vita-restbounce-include')
+
+
+# 140. Grandstaircase_hub: 'bsp info' 15 ms, of which 'bsp info: skeletal box' 8.6 ms for 766 skeletal-mesh actors a frame
+#      (KW::GetRenderBoundingBox poses the skeleton). The BSP placement is only for drawing, and a bHidden actor is never drawn:
+#      DrawScene no longer places hidden actors (their placement is made again the frame they show; GetBoundingBox(exact) still
+#      places them). render.cfg bsp_hidden=1: the old way.
+edit("Render/RenderScene.cpp",
+     re.escape("\t\tif (actor)\n\t\t\tactor->UpdateBspInfo(); // vita-probe-bspactor removed: vita-bspactor-off\n"),
+     lambda m: ("#ifdef __vita__ // vita-bsphidden\n"
+                "\t\tstatic const bool vitaBspHidden = VitaConfigInt(\"bsp_hidden\", 0) != 0;\n"
+                "\t\tif (actor && (vitaBspHidden || !actor->bHidden()))\n\t\t\tactor->UpdateBspInfo();\n"
+                "#else\n" + m.group(0) + "#endif\n"),
+     'vita-bsphidden')
+
+
+# 141. render.cfg vm_laps=1: laps in Frame::Call of a script function ('vm: setup / run / finish') and the statements run
+#      ('vm: statements' calls): HP2's HPawn.Tick (Super.Tick, +=, <, return) costs ~15 us a call.
+edit("VM/Frame.cpp",
+     re.escape("\t\tFrame frame(instance, func, 0, false);\n\n\t\t// Store args in function frame local variables\n"),
+     lambda m: ("#ifdef __vita__ // vita-vmlaps-start\n"
+                "\t\tif (VitaProbes::vmLaps < 0)\n\t\t\tVitaProbes::vmLaps = VitaConfigInt(\"vm_laps\", 0) != 0 ? 1 : 0;\n"
+                "\t\tstruct VitaVmLap\n\t\t{\n\t\t\tuint64_t last = 0;\n\t\t\tbool on = false;\n"
+                "\t\t\tvoid Mark(VitaProbes::Id id)\n\t\t\t{\n\t\t\t\tif (!on)\n\t\t\t\t\treturn;\n"
+                "\t\t\t\tconst uint64_t now = VitaProbes::Now();\n\t\t\t\tVitaProbes::us[id] += (double)(now - last);\n\t\t\t\tVitaProbes::calls[id]++;\n\t\t\t\tlast = now;\n\t\t\t}\n"
+                "\t\t\t~VitaVmLap() { Mark(VitaProbes::VmFinish); }\n"
+                "\t\t} vitaVmLap;\n"
+                "\t\tif (VitaProbes::vmLaps == 1)\n\t\t{\n\t\t\tvitaVmLap.on = true;\n\t\t\tvitaVmLap.last = VitaProbes::Now();\n\t\t}\n#endif\n"
+                + m.group(0)),
+     'vita-vmlaps-start')
+edit("VM/Frame.cpp",
+     re.escape("\t\t// Run the function\n\t\tExpressionValue result = frame.Run().Value;\n"),
+     lambda m: ("#ifdef __vita__ // vita-vmlaps-run\n\t\tvitaVmLap.Mark(VitaProbes::VmSetup);\n#endif\n" + m.group(0) +
+                "#ifdef __vita__ // vita-vmlaps-ran\n\t\tvitaVmLap.Mark(VitaProbes::VmRun);\n#endif\n"),
+     'vita-vmlaps-run')
+edit("VM/Frame.cpp",
+     re.escape("\t\tExpression* statement = Func->Code->Statements[curStatementIndex];\n"),
+     lambda m: m.group(0) + "#ifdef __vita__ // vita-vmlaps-stmt\n\t\tif (VitaProbes::vmLaps == 1)\n\t\t\tVitaProbes::calls[VitaProbes::VmStatements]++;\n#endif\n",
+     'vita-vmlaps-stmt')
+
+
+# 142. Grandstaircase_hub (GSTATE050): ~1190 actor ticks a frame, ~9900 script calls and ~49000 statements (#141). The most
+#      called script function is HPawn.Tick (hundreds of props, points and characters): Super.Tick (empty), fCurrTime += dtime,
+#      'if (fCurrTime < 1.0) return', then once a second the despawn check. A function whose code starts with exactly that shape
+#      (an optional call of an empty function with plain local arguments; <float instance variable> += <its first parameter>;
+#      if (<that variable> < <float constant, or a float instance variable>) return without a value) is recognised once from its expressions; when the sum
+#      stays under the constant, Frame::Call stores it and returns (what the script does); otherwise the script runs from the
+#      start as before. Log: 'script: guard prefix answered' (laps). render.cfg tick_guard=0: off.
+edit("Packages/Core/UStruct.h",
+     re.escape("\tint8_t VitaFastOp = -1; // vita-fastop-field"),
+     lambda m: ("\tint8_t VitaGuard = -1; // vita-guard-field: the code starts with the accumulate-and-return guard (1), not (0), unknown (-1)\n"
+                "\tUProperty* VitaGuardVar = nullptr; // vita-guard-field2\n\tfloat VitaGuardLimit = 0.0f;\n\tUProperty* VitaGuardLimitVar = nullptr; // or the limit is this float variable\n" + m.group(0)),
+     'vita-guard-field')
+edit("VM/Frame.cpp",
+     re.escape("\t\t// While a singular function runs on an object, every singular call on that object is skipped"),
+     lambda m: ("#ifdef __vita__ // vita-guard-call\n"
+                "\t\tif (func->VitaGuard < 0)\n\t\t\tfunc->VitaGuard = VitaFindGuard(func) ? 1 : 0;\n"
+                "\t\tif (func->VitaGuard == 1 && args.size() >= 1)\n\t\t{\n"
+                "\t\t\tfloat* acc = (float*)((uint8_t*)instance->PropertyData.Data + func->VitaGuardVar->DataOffset.DataOffset);\n"
+                "\t\t\tconst float sum = *acc + args[0].ToFloat();\n"
+                "\t\t\tconst float limit = func->VitaGuardLimitVar ? *(const float*)((const uint8_t*)instance->PropertyData.Data + func->VitaGuardLimitVar->DataOffset.DataOffset) : func->VitaGuardLimit;\n"
+                "\t\t\tif (sum < limit)\n\t\t\t{\n"
+                "\t\t\t\t*acc = sum;\n"
+                "\t\t\t\tif (VitaProbes::enabled)\n\t\t\t\t\tVitaProbes::calls[VitaProbes::TickGuard]++;\n"
+                "\t\t\t\treturn ExpressionValue::NothingValue();\n\t\t\t}\n\t\t}\n#endif\n" + m.group(0)),
+     'vita-guard-call')
+edit("VM/Frame.cpp",
+     re.escape("ExpressionValue Frame::Call(UFunction* func, UObject* instance, const ArrayView<ExpressionValue>& args)\n{\n"),
+     lambda m: ("#ifdef __vita__ // vita-guard-find: see apply_fixes.sh #142\n"
+                "static bool VitaIsEmptyCode(UFunction* f)\n{\n"
+                "\tif (!f || AllFlags(f->FuncFlags, FunctionFlags::Native) || !f->Code || f->Code->Statements.size() != 1 || !f->Code->Statements[0] ||\n"
+                "\t\tf->Code->Statements[0]->Type != ExpressionType::Return)\n\t\treturn false;\n"
+                "\tExpression* value = static_cast<ReturnExpression*>(f->Code->Statements[0])->Value;\n"
+                "\tif (value && value->Type != ExpressionType::Nothing)\n\t\treturn false;\n"
+                "\tfor (UProperty* prop : f->Properties)\n"
+                "\t\tif (AllFlags(prop->PropFlags, PropertyFlags::ReturnParm) || AllFlags(prop->PropFlags, PropertyFlags::OutParm))\n\t\t\treturn false;\n"
+                "\treturn true;\n}\n\n"
+                "static bool VitaFindGuard(UFunction* func)\n{\n"
+                "\tstatic const bool on = VitaConfigInt(\"tick_guard\", 1) != 0;\n"
+                "\tif (!on || !func->Code || AllFlags(func->FuncFlags, FunctionFlags::Singular))\n\t\treturn false;\n"
+                "\tUProperty* firstParm = nullptr;\n"
+                "\tfor (UProperty* prop : func->Properties)\n\t\tif (AllFlags(prop->PropFlags, PropertyFlags::Parm))\n\t\t{\n\t\t\tfirstParm = prop;\n\t\t\tbreak;\n\t\t}\n"
+                "\tif (!firstParm || !dynamic_cast<UFloatProperty*>(firstParm) || AllFlags(firstParm->PropFlags, PropertyFlags::OutParm))\n\t\treturn false;\n"
+                "\tconst auto& st = func->Code->Statements;\n\tsize_t i = 0;\n"
+                "\tif (st.size() >= 1 && st[0] && st[0]->Type == ExpressionType::FinalFunction)\n\t{\n"
+                "\t\tauto call = static_cast<FinalFunctionExpression*>(st[0]);\n"
+                "\t\tif (!VitaIsEmptyCode(call->Func))\n\t\t\treturn false;\n"
+                "\t\tfor (Expression* a : call->Args)\n"
+                "\t\t\tif (a && a->Type != ExpressionType::LocalVariable && a->Type != ExpressionType::Nothing)\n\t\t\t\treturn false;\n"
+                "\t\ti = 1;\n\t}\n"
+                "\tif (st.size() < i + 3 || !st[i] || !st[i + 1] || !st[i + 2])\n\t\treturn false;\n"
+                "\tif (st[i]->Type != ExpressionType::NativeFunction)\n\t\treturn false;\n"
+                "\tauto add = static_cast<NativeFunctionExpression*>(st[i]);\n"
+                "\tUFunction* addFunc = NativeFunctions::FuncByIndex[add->nativeindex];\n"
+                "\tif (!addFunc || addFunc->Name != NameString(\"AddEqual_FloatFloat\") || add->Args.size() != 2 || !add->Args[0] || !add->Args[1] ||\n"
+                "\t\tadd->Args[0]->Type != ExpressionType::InstanceVariable || add->Args[1]->Type != ExpressionType::LocalVariable)\n\t\treturn false;\n"
+                "\tUProperty* var = static_cast<InstanceVariableExpression*>(add->Args[0])->Variable;\n"
+                "\tif (!var || !dynamic_cast<UFloatProperty*>(var) || var->ArrayDimension != 1 || static_cast<LocalVariableExpression*>(add->Args[1])->Variable != firstParm)\n\t\treturn false;\n"
+                "\tif (st[i + 1]->Type != ExpressionType::JumpIfNot)\n\t\treturn false;\n"
+                "\tExpression* cond = static_cast<JumpIfNotExpression*>(st[i + 1])->Condition;\n"
+                "\tif (!cond || cond->Type != ExpressionType::NativeFunction)\n\t\treturn false;\n"
+                "\tauto less = static_cast<NativeFunctionExpression*>(cond);\n"
+                "\tUFunction* lessFunc = NativeFunctions::FuncByIndex[less->nativeindex];\n"
+                "\tif (!lessFunc || lessFunc->Name != NameString(\"Less_FloatFloat\") || less->Args.size() != 2 || !less->Args[0] || !less->Args[1] ||\n"
+                "\t\tless->Args[0]->Type != ExpressionType::InstanceVariable || static_cast<InstanceVariableExpression*>(less->Args[0])->Variable != var ||\n"
+                "\t\t(less->Args[1]->Type != ExpressionType::FloatConst && less->Args[1]->Type != ExpressionType::InstanceVariable))\n\t\treturn false;\n"
+                "\tUProperty* limitVar = nullptr;\n"
+                "\tif (less->Args[1]->Type == ExpressionType::InstanceVariable)\n\t{\n"
+                "\t\tlimitVar = static_cast<InstanceVariableExpression*>(less->Args[1])->Variable;\n"
+                "\t\tif (!limitVar || !dynamic_cast<UFloatProperty*>(limitVar) || limitVar->ArrayDimension != 1)\n\t\t\treturn false;\n\t}\n"
+                "\tif (st[i + 2]->Type != ExpressionType::Return)\n\t\treturn false;\n"
+                "\tExpression* rv = static_cast<ReturnExpression*>(st[i + 2])->Value;\n"
+                "\tif (rv && rv->Type != ExpressionType::Nothing)\n\t\treturn false;\n"
+                "\tfor (UProperty* prop : func->Properties)\n"
+                "\t\tif (AllFlags(prop->PropFlags, PropertyFlags::ReturnParm) || AllFlags(prop->PropFlags, PropertyFlags::OutParm))\n\t\t\treturn false;\n"
+                "\tfunc->VitaGuardVar = var;\n"
+                "\tfunc->VitaGuardLimitVar = limitVar;\n\tfunc->VitaGuardLimit = limitVar ? 0.0f : static_cast<FloatConstExpression*>(less->Args[1])->Value;\n"
+                "\tLogMessage(\"tick_guard: \" + func->Name.ToString() + \" (\" + var->Name.ToString() + \" < \" + (limitVar ? limitVar->Name.ToString() : std::to_string(func->VitaGuardLimit)) + \") answered natively\");\n"
+                "\treturn true;\n}\n#endif\n\n" + m.group(0)),
+     'vita-guard-find')
+
+edit("VM/Frame.cpp", re.escape('#include "VitaConfig.h" // vita-sprof-include\n'),
+     lambda m: m.group(0) + '#include "Packages/Core/Properties/UFloatProperty.h" // vita-guard-include\n', 'vita-guard-include')
+
+
+
+# 144. Grandstaircase_hub: 516 skeletal-mesh actors a frame get their render box made again (~11 us each, they animate: candle
+#      flames), only to place them in the BSP for drawing. One that has not moved (same Location and Rotation as at its last
+#      placement) and is farther than 1000 units from the camera is placed again every skel_box_rate (4) frames, staggered;
+#      a moved or near one every frame as before. render.cfg skel_box_rate=1: every frame.
+edit("Packages/Engine/Actors/UActor.h",
+     re.escape("\t\tint8_t VitaStatic = -1;     // vita-bspstatic-field"),
+     lambda m: ("\t\tvec3 VitaSkelLoc = vec3(0.0f); // vita-skelrate-field: Location / Rotation at the last skeletal box\n"
+                "\t\tint VitaSkelRot[3] = { 0, 0, 0 };\n\t\tbool VitaSkelValid = false;\n" + m.group(0)),
+     'vita-skelrate-field')
+edit("Packages/Engine/Actors/UActor_Render.cpp",
+     re.escape("\t\tif (!animated)\n\t\t{\n\t\t\tconst vec3 location = Location();\n"),
+     lambda m: ("\t\tif (animated && BspInfo.Node && drawType == DT_Mesh) // vita-skelrate\n\t\t{\n"
+                "\t\t\tstatic const int vitaSkelRate = std::max(VitaConfigInt(\"skel_box_rate\", 4), 1);\n"
+                "\t\t\tconst vec3 location = Location();\n\t\t\tconst Rotator rotation = Rotation();\n"
+                "\t\t\tconst bool still = BspInfo.VitaSkelValid && BspInfo.VitaSkelLoc == location && BspInfo.VitaSkelRot[0] == rotation.Pitch &&\n"
+                "\t\t\t\tBspInfo.VitaSkelRot[1] == rotation.Yaw && BspInfo.VitaSkelRot[2] == rotation.Roll;\n"
+                "\t\t\tconst vec3 d = location - engine->CameraLocation;\n"
+                "\t\t\tif (vitaSkelRate > 1 && still && dot(d, d) > 1000.0f * 1000.0f &&\n"
+                "\t\t\t\t((((uint32_t)(uintptr_t)this >> 6) + VitaTimers::frameNumber) % (uint32_t)vitaSkelRate) != 0)\n\t\t\t\treturn;\n"
+                "\t\t\tBspInfo.VitaSkelValid = true;\n\t\t\tBspInfo.VitaSkelLoc = location;\n"
+                "\t\t\tBspInfo.VitaSkelRot[0] = rotation.Pitch;\n\t\t\tBspInfo.VitaSkelRot[1] = rotation.Yaw;\n\t\t\tBspInfo.VitaSkelRot[2] = rotation.Roll;\n\t\t}\n"
+                + m.group(0)),
+     'vita-skelrate')
+
+
+# 145. vm_laps=1 also splits VitaCallEvent ('event: enabled / checks / find / call'): an ActorShadow Tick event (bUpdated = false;
+#      return) costs ~32 us, far more than its frame (setup + finish ~2 us).
+edit("VM/ScriptCall.cpp",
+     re.escape("ExpressionValue VitaCallEvent(UObject* Context, EventName eventname, ExpressionValue* args, size_t count)\n{\n\tif (!Context->IsEventEnabled(eventname))\n\t\treturn ExpressionValue::NothingValue();\n\n\tif (auto actor = UObject::TryCast<UActor>(Context))\n\t{\n\t\tif (!actor->Level()->bBegunPlay() || (actor->bDeleteMe() && eventname != EventName::Destroyed))\n\t\t\treturn ExpressionValue::NothingValue();\n\t}\n\n\tUFunction* func = FindEventFunction(Context, ToNameString(eventname));\n\tif (func)\n\t\treturn Frame::Call(func, Context, { args, count });\n"),
+     lambda m: ("ExpressionValue VitaCallEvent(UObject* Context, EventName eventname, ExpressionValue* args, size_t count)\n{\n"
+                "\tstruct VitaEvLap\n\t{\n\t\tuint64_t last = 0;\n\t\tbool on = false;\n"
+                "\t\tvoid Mark(VitaProbes::Id id)\n\t\t{\n\t\t\tif (!on)\n\t\t\t\treturn;\n\t\t\tconst uint64_t now = VitaProbes::Now();\n"
+                "\t\t\tVitaProbes::us[id] += (double)(now - last);\n\t\t\tVitaProbes::calls[id]++;\n\t\t\tlast = now;\n\t\t}\n\t} vitaLap; // vita-evlaps\n"
+                "\tif (VitaProbes::vmLaps == 1 && VitaProbes::enabled)\n\t{\n\t\tvitaLap.on = true;\n\t\tvitaLap.last = VitaProbes::Now();\n\t}\n"
+                "\tif (!Context->IsEventEnabled(eventname))\n\t\treturn ExpressionValue::NothingValue();\n\tvitaLap.Mark(VitaProbes::EvEnabled);\n\n"
+                "\tif (auto actor = UObject::TryCast<UActor>(Context))\n\t{\n\t\tif (!actor->Level()->bBegunPlay() || (actor->bDeleteMe() && eventname != EventName::Destroyed))\n\t\t\treturn ExpressionValue::NothingValue();\n\t}\n"
+                "\tvitaLap.Mark(VitaProbes::EvChecks);\n\n"
+                "\tUFunction* func = FindEventFunction(Context, ToNameString(eventname));\n\tvitaLap.Mark(VitaProbes::EvFind);\n"
+                "\tif (func)\n\t{\n\t\tExpressionValue r = Frame::Call(func, Context, { args, count });\n\t\tvitaLap.Mark(VitaProbes::EvCall);\n\t\treturn r;\n\t}\n"),
+     'vita-evlaps')
+
+edit("VM/ScriptCall.cpp", re.escape('#include "VitaFuncCache.h" // vita-funccache-inc2\n'),
+     lambda m: m.group(0) + '#include "VitaProbes.h" // vita-evlaps-include\n', 'vita-evlaps-include')
+
+
+# 146. The level the player leaves is let go (VitaLevelRelease.h: why and how). HP2 kept ~20 MB a level change and ran out of heap
+#      on the 3rd-4th door between EntryHall_Hub and Grandstaircase_hub. render.cfg level_release=0: the old way.
+#  a) GC::VitaFindUnreached: the collector's mark started from every object outside a set; says which objects of the set nothing
+#     outside reaches. Marks are left as they were (unreferencedFlag true).
+edit("GC/GC.h",
+     re.escape('\tstatic GCAllocation* MarkObject(GCAllocation* marklist, GCObject* obj);\n'),
+     lambda m: m.group(0) + ('\n\t// vita-gc-unreached (apply_fixes #146): result(obj, reached) for every object inside(obj) is true for: reached = an object\n'
+                             '\t// outside the set points at it (through its properties, or a package\'s exports), directly or through others.\n'
+                             '\ttemplate<typename Inside, typename Result> static void VitaFindUnreached(Inside inside, Result result);\n'),
+     'vita-gc-unreached')
+edit("GC/GC.h",
+     re.escape('inline GCObjectList GC::GetObjects() { return {}; }\n'),
+     lambda m: m.group(0) + ('\ntemplate<typename Inside, typename Result>\nvoid GC::VitaFindUnreached(Inside inside, Result result) // vita-gc-unreached-def\n{\n'
+                             '\tGCAllocation* marklist = nullptr;\n'
+                             '\tfor (GCAllocation* a = GetAllocations(); a; a = a->allocklistNext)\n'
+                             '\t\tif (!inside(a->object()))\n\t\t\tmarklist = MarkObject(marklist, a->object());\n'
+                             '\twhile (marklist)\n\t\tmarklist = Mark(marklist);\n'
+                             '\tstd::vector<std::pair<GCObject*, bool>> found;\n'
+                             '\tfor (GCAllocation* a = GetAllocations(); a; a = a->allocklistNext)\n\t{\n'
+                             '\t\tif (inside(a->object()))\n\t\t\tfound.push_back({ a->object(), !a->unreferencedFlag });\n'
+                             '\t\ta->unreferencedFlag = true;\n\t}\n'
+                             '\tfor (auto& f : found)\n\t\tresult(f.first, f.second);\n}\n'),
+     'vita-gc-unreached-def')
+#  b) An object property marked the address of its slot, not the object in it (and dropped the mark list): nothing was ever marked
+#     through one. (GC::Collect is never run on the Vita; the mark above needs it.)
+edit("Packages/Core/Properties/UObjectProperty.cpp",
+     re.escape('\tGC::MarkObject(marklist, static_cast<UObject*>(data));\n\treturn marklist;\n'),
+     lambda m: '\treturn GC::MarkObject(marklist, *static_cast<UObject**>(data)); // vita-markobjprop\n',
+     'vita-markobjprop')
+#  c) An object not loaded yet (a delayed load) has no property block: mark only its class.
+edit("Packages/Core/UObject.cpp",
+     re.escape('\tif (Class)\n\t{\n\t\tmarklist = GC::MarkObject(marklist, Class);\n'),
+     lambda m: m.group(0) + '\t\tif (!PropertyData.Data || PropertyData.Size < Class->StructSize) // vita-mark-unloaded\n\t\t\treturn marklist;\n',
+     'vita-mark-unloaded')
+#  d) UnloadMap lets the old map go (the renderer flushed first: no batch still points into it).
+edit("Engine.cpp",
+     re.escape('#include "VitaBoot.h" // vita-boot-inc\n'),
+     lambda m: m.group(0) + '#include "VitaLevelRelease.h" // vita-levelrelease-inc\n',
+     'vita-levelrelease-inc')
+edit("Engine.cpp",
+     re.escape('void Engine::UnloadMap()\n{\n'),
+     lambda m: m.group(0) + ('\tPackage* vitaOldPackage = (LevelPackage && LevelPackage != EntryLevelPackage) ? LevelPackage : nullptr; // vita-levelrelease-old\n'
+                             '\tULevel* vitaOldLevel = Level;\n'),
+     'vita-levelrelease-old')
+edit("Engine.cpp",
+     re.escape('\tviewport->Actor() = nullptr;\n\n\tif (VitaConfigInt("gc", 0))'),
+     lambda m: ('\tviewport->Actor() = nullptr;\n\n'
+                '\tif (vitaOldPackage) // vita-levelrelease-call\n\t{\n'
+                '\t\tif (render && render->Device)\n\t\t\trender->Device->Flush(true);\n'
+                '\t\tVitaLevelRelease::Release(vitaOldPackage, vitaOldLevel, EntryLevelPackage);\n\t}\n\n'
+                '\tif (VitaConfigInt("gc", 0))'),
+     'vita-levelrelease-call')
+#  e) The caches kept by actor empty themselves when a level is let go.
+edit("../../knowwonder/Anim/KWSkeletal.cpp",
+     re.escape('#include "VitaConfig.h" // vita-skininc\n'),
+     lambda m: m.group(0) + '#include "VitaLevelEpoch.h" // vita-epoch-inc\n', 'vita-epoch-inc')
+edit("../../knowwonder/Anim/KWSkeletal.cpp",
+     re.escape('\t\tSkelCache& cache = SkelCaches[actor];\n'),
+     lambda m: '\t\tVITA_LEVEL_EPOCH_CLEAR(SkelCaches); // vita-epoch-skel\n' + m.group(0), 'vita-epoch-skel')
+edit("../../knowwonder/Anim/KWSkeletal.cpp",
+     re.escape('\t\tif (VitaSkinCache.size() > 600)\n'),
+     lambda m: '\t\tVITA_LEVEL_EPOCH_CLEAR(VitaSkinCache); // vita-epoch-skin\n' + m.group(0), 'vita-epoch-skin')
+edit("../../knowwonder/KWParticleFX.cpp",
+     re.escape('#include "VitaTimers.h" // vita-ptinc\n'),
+     lambda m: m.group(0) + '#include "VitaLevelEpoch.h" // vita-epoch-inc\n', 'vita-epoch-inc')
+edit("../../knowwonder/KWParticleFX.cpp",
+     re.escape('\t\t\tif (!a || a->bDeleteMe())\n\t\t\t\treturn nullptr;\n\t\t\tauto it = States.find(a);\n'),
+     lambda m: m.group(0).replace('\t\t\tauto it', '\t\t\tVITA_LEVEL_EPOCH_CLEAR(States); // vita-epoch-pfx\n\t\t\tauto it'), 'vita-epoch-pfx')
+edit("../../knowwonder/KWPhysics.cpp",
+     re.escape('#include "VitaProbes.h" // vita-restbounce-include\n'),
+     lambda m: m.group(0) + '#include "VitaLevelEpoch.h" // vita-epoch-inc\n', 'vita-epoch-inc')
+edit("../../knowwonder/KWPhysics.cpp",
+     re.escape('\t\tVitaRest& r = vitaRests[actor];\n'),
+     lambda m: '\t\tVITA_LEVEL_EPOCH_CLEAR(vitaRests); // vita-epoch-rest\n' + m.group(0), 'vita-epoch-rest')
+
+
+#  f) GC::VitaDirectRefs: the objects one object points at directly (its Mark, with the marks put back): level_release_why=1 logs
+#     which outside objects keep the old level's objects (VitaLevelRelease.h).
+edit("GC/GC.h",
+     re.escape('template<typename Inside, typename Result>\nvoid GC::VitaFindUnreached'),
+     lambda m: ('template<typename Visit>\nvoid GC::VitaDirectRefs(GCObject* obj, Visit visit) // vita-gc-directrefs\n{\n'
+                '\tGCAllocation* list = obj->Mark(nullptr);\n'
+                '\tfor (GCAllocation* a = list; a; a = a->marklistNext)\n\t\ta->unreferencedFlag = true;\n'
+                '\tfor (GCAllocation* a = list; a; a = a->marklistNext)\n\t\tvisit(a->object());\n}\n\n') + m.group(0),
+     'vita-gc-directrefs')
+edit("GC/GC.h",
+     re.escape('\ttemplate<typename Inside, typename Result> static void VitaFindUnreached(Inside inside, Result result);\n'),
+     lambda m: m.group(0) + '\ttemplate<typename Visit> static void VitaDirectRefs(GCObject* obj, Visit visit); // vita-gc-directrefs-decl\n',
+     'vita-gc-directrefs-decl')
+
+#  g) Trees patched by the first #146: Release takes the Entry level's package too.
+edit("Engine.cpp",
+     re.escape('VitaLevelRelease::Release(vitaOldPackage, vitaOldLevel);'),
+     lambda m: 'VitaLevelRelease::Release(vitaOldPackage, vitaOldLevel, EntryLevelPackage);',
+     'vitaOldLevel, EntryLevelPackage')
+
+#  h) An event sent to an actor with no LevelInfo (a let-go actor still known to some native code: its properties are its class's
+#     defaults now) is dropped and logged, instead of crashing on Level()->bBegunPlay (seen right after a door, by data abort).
+edit("VM/ScriptCall.cpp",
+     re.escape('\tif (auto actor = UObject::TryCast<UActor>(Context))\n\t{\n\t\tif (!actor->Level()->bBegunPlay()'),
+     lambda m: ('\tif (auto actor = UObject::TryCast<UActor>(Context))\n\t{\n'
+                '\t\tif (!actor->Level()) // vita-nolevel-event\n\t\t{\n\t\t\tstatic int vitaNoLevel = 0;\n'
+                '\t\t\tif (vitaNoLevel++ < 20)\n'
+                '\t\t\t\tLogMessage("CallEvent: " + ToNameString(eventname).ToString() + " sent to " + actor->Name.ToString() + " (" +\n'
+                '\t\t\t\t\t(actor->Class ? actor->Class->Name.ToString() : std::string("?")) + "), an actor with no level: dropped");\n'
+                '\t\t\treturn ExpressionValue::NothingValue();\n\t\t}\n'
+                '\t\tif (!actor->Level()->bBegunPlay()'),
+     'vita-nolevel-event')
+
+edit("VM/ScriptCall.cpp",
+     r'(const NameString& name, Array<ExpressionValue> args\)\n\{[\s\S]*?)ToNameString\(eventname\)\.ToString\(\)',
+     lambda m: m.group(1) + 'name.ToString()',
+     'name.ToString() + " sent to "')
+edit("VM/ScriptCall.cpp",
+     re.escape('#include "VitaProbes.h" // vita-evlaps-include\n'),
+     lambda m: m.group(0) + '#include "Utils/Logger.h" // vita-nolevel-include\n',
+     'vita-nolevel-include')
+
+#  i) The let-go actors are freed too (level_free_actors=0: only hollowed): their shells (~2.3 MB a level, ~400 bytes each with
+#     their state frames) were what still grew. GC::VitaFree takes objects out of the list and frees them like Sweep does; the old
+#     package forgets them (Package::VitaForgetExports: its Mark would read them). The caches compared by pointer that could meet
+#     a new actor at a freed one's address empty themselves with the level epoch (VitaLevelEpoch.h): music's player, coronas.
+edit("GC/GC.h",
+     re.escape('\ttemplate<typename Visit> static void VitaDirectRefs(GCObject* obj, Visit visit); // vita-gc-directrefs-decl\n'),
+     lambda m: m.group(0) + '\tstatic void VitaFree(const std::vector<GCObject*>& objects); // vita-gc-free-decl\n',
+     'vita-gc-free-decl')
+edit("GC/GC.cpp",
+     re.escape('GCStats GC::GetStats()\n'),
+     lambda m: ('void GC::VitaFree(const std::vector<GCObject*>& objects) // vita-gc-free (apply_fixes #146)\n{\n'
+                '\tif (objects.empty())\n\t\treturn;\n'
+                '\tstd::unordered_set<GCObject*> gone(objects.begin(), objects.end());\n'
+                '\tGCAllocation* prev = nullptr;\n\tGCAllocation* cur = allocations;\n'
+                '\twhile (cur)\n\t{\n\t\tGCAllocation* next = cur->allocklistNext;\n'
+                '\t\tif (gone.count(cur->object()))\n\t\t{\n'
+                '\t\t\tif (prev)\n\t\t\t\tprev->allocklistNext = next;\n\t\t\telse\n\t\t\t\tallocations = next;\n'
+                '\t\t\tstats.memoryUsage -= cur->memsize;\n\t\t\tstats.numObjects--;\n'
+                '\t\t\tcur->object()->~GCObject();\n\t\t\tfree(cur);\n\t\t}\n'
+                '\t\telse\n\t\t\tprev = cur;\n\t\tcur = next;\n\t}\n}\n\n') + m.group(0),
+     'vita-gc-free (apply_fixes')
+edit("GC/GC.cpp",
+     re.escape('#include "GC.h"\n'),
+     lambda m: m.group(0) + '#include <unordered_set> // vita-gc-free-inc\n',
+     'vita-gc-free-inc')
+edit("Package/Package.h",
+     re.escape('\ttemplate<class T> Array<T*> GetAllObjects();\n'),
+     lambda m: m.group(0) + ('\n\t// vita-forget-exports (apply_fixes #146): the exports gone(obj) says were freed are forgotten (a later GetUObject loads them again)\n'
+                             '\ttemplate<class F> void VitaForgetExports(F gone) { for (UObject*& obj : ExportObjects) if (obj && gone(obj)) obj = nullptr; }\n'),
+     'vita-forget-exports')
+edit("../../knowwonder/KWSound.cpp",
+     re.escape('\t\tif (player != music.player)\n\t\t{\n\t\t\tmusic.player = player;\n'),
+     lambda m: ('\t\tstatic int vitaMusicEpoch = 0; // vita-epoch-music: a new PlayerPawn can be where a freed one was\n'
+                '\t\tif (player != music.player || vitaMusicEpoch != vitaLevelEpoch)\n\t\t{\n\t\t\tvitaMusicEpoch = vitaLevelEpoch;\n\t\t\tmusic.player = player;\n'),
+     'vita-epoch-music')
+edit("../../knowwonder/KWSound.cpp",
+     re.escape('#include "Precomp.h"\n'),
+     lambda m: m.group(0) + '#include "VitaLevelEpoch.h" // vita-epoch-inc\n',
+     'vita-epoch-inc')
+edit("Render/VisibleCorona.cpp",
+     re.escape('\tif (cache.size() > 4096)\n\t\tcache.clear();\n'),
+     lambda m: '\tVITA_LEVEL_EPOCH_CLEAR(cache); // vita-epoch-corona\n' + m.group(0),
+     'vita-epoch-corona')
+edit("Render/VisibleCorona.cpp",
+     re.escape('#ifdef __vita__ // vita-corona\n'),
+     lambda m: m.group(0) + '#include "VitaLevelEpoch.h" // vita-epoch-inc\n',
+     'vita-epoch-inc')
+
+#  j) The let-go BSP models (and their polygons) are freed too, and the old package forgets its name, import and export tables
+#     (Package::VitaForgetTables). KWBspCheck's hull cache (kept by model) empties itself with the epoch.
+edit("Package/Package.h",
+     re.escape('\ttemplate<class F> void VitaForgetExports(F gone) { for (UObject*& obj : ExportObjects) if (obj && gone(obj)) obj = nullptr; }\n'),
+     lambda m: m.group(0) + ('\tvoid VitaForgetTables() // vita-forget-tables: a map package left behind (nothing loads from it again)\n\t{\n'
+                             '\t\tArray<NameTableEntry>().swap(NameTable);\n\t\tArray<ExportTableEntry>().swap(ExportTable);\n'
+                             '\t\tArray<ImportTableEntry>().swap(ImportTable);\n\t\tNameHash.clear();\n\t}\n'),
+     'vita-forget-tables')
+edit("../../knowwonder/KWBspCheck.cpp",
+     re.escape('\t\tif (frame.Model != cachedModel)\n\t\t{\n\t\t\tcache.clear();\n'),
+     lambda m: '\t\tVITA_LEVEL_EPOCH_CLEAR(cache); // vita-epoch-hull: a new model can be where a freed one was\n' + m.group(0),
+     'vita-epoch-hull')
+edit("../../knowwonder/KWBspCheck.cpp",
+     re.escape('#include "Precomp.h"\n'),
+     lambda m: m.group(0) + '#include "VitaLevelEpoch.h" // vita-epoch-inc\n',
+     'vita-epoch-inc')
+
+
+# 147. The log was written out only when a line came more than a second after the last write: a game that hung while starting
+#      left flipendo.log EMPTY (twice on 07 Nov, Lev2_Fire1 by --level). The first 400 lines and every 'Boot:' line are now written
+#      at once, so a hang at the start shows where it stopped.
+edit("GameApp.cpp",
+     re.escape('\t\t\t\tif (now - lastFlush > std::chrono::seconds(1) || line.Text.find("FATAL") != std::string::npos)\n'),
+     lambda m: ('\t\t\t\tstatic int vitaLogLines = 0; // vita-logstart: the start is written line by line\n'
+                '\t\t\t\tif (now - lastFlush > std::chrono::seconds(1) || line.Text.find("FATAL") != std::string::npos ||\n'
+                '\t\t\t\t\t++vitaLogLines < 400 || line.Text.compare(0, 5, "Boot:") == 0)\n'),
+     'vita-logstart')
+# 148. The log on its own thread (VitaLogWriter.h): the once-a-second write to the card (#33) was 5-6% of the engine thread in the
+#      profile of 07 Nov. The engine thread appends; the 'logwriter' thread writes every 250 ms; FATAL lines and the end at once.
+edit("GameApp.cpp",
+     re.escape('#include "VitaBoot.h" // vita-boot-appinc\n'),
+     lambda m: m.group(0) + '#ifdef __vita__ // vita-logwriter-inc\n#include "VitaLogWriter.h"\n#endif\n',
+     'vita-logwriter-inc')
+edit("GameApp.cpp",
+     re.escape('\t\t\tlogfile.open(logfilename, std::ios::out | std::ios::trunc);\n'),
+     lambda m: ('#ifdef __vita__ // vita-logwriter-open\n\t\t\tif (!VitaLogWriter::Open(logfilename))\n#endif\n' + m.group(0)),
+     'vita-logwriter-open')
+edit("GameApp.cpp",
+     re.escape('#ifdef __vita__ // vita-logbuffer\n'),
+     lambda m: (m.group(0) +
+                '\t\t\t\tif (VitaLogWriter::fd >= 0) // vita-logwriter-line\n\t\t\t\t{\n'
+                '\t\t\t\t\tchar time[32];\n\t\t\t\t\tsnprintf(time, sizeof(time), "[%g] ", line.Time); // as the stream writes it\n'
+                '\t\t\t\t\tstd::string text = time + line.Source + (line.Source.empty() ? "" : ": ") + line.Text + "\\n";\n'
+                '\t\t\t\t\tVitaLogWriter::Append(text, line.Text.find("FATAL") != std::string::npos);\n'
+                '\t\t\t\t\treturn;\n\t\t\t\t}\n'),
+     'vita-logwriter-line')
+edit("GameApp.cpp",
+     re.escape('\t\t\tif (logfile.is_open())\n\t\t\t\tlogfile << "FATAL: " << e.what() << std::endl;\n'),
+     lambda m: ('#ifdef __vita__ // vita-logwriter-fatal\n\t\t\tif (VitaLogWriter::fd >= 0)\n'
+                '\t\t\t\tVitaLogWriter::Append(std::string("FATAL: ") + e.what() + "\\n", true);\n#endif\n' + m.group(0)),
+     'vita-logwriter-fatal')
+edit("GameApp.cpp",
+     re.escape('\tDeinitWidgetResources();\n\treturn 0;\n}'),
+     lambda m: '#ifdef __vita__ // vita-logwriter-end\n\tVitaLogWriter::Flush();\n#endif\n' + m.group(0),
+     'vita-logwriter-end')
+# 149. Loading: Package::FindObjectReference walked the whole export table for every object it was asked for (every import of
+#      every package, every GetUObject by name): ~20% of a level load in the profile of 07 Nov (GetUObject 13.5, GetName 6.9,
+#      FindObjectReference 5.4 with the inlined loop). Now the exports are listed by name (compare index) once per table size,
+#      and only those with the name are looked at, in the same order (the same answer). The names compared with fixed
+#      strings ("Class", "UnrealI", "UnrealShare") are made once (each NameString("...") is a string hash lookup).
+edit("Package/Package.h",
+     re.escape('\tstd::map<NameString, int> NameHash;\n'),
+     lambda m: m.group(0) + ('#ifdef __vita__ // vita-exportsbyname\n'
+                             '\tstd::unordered_map<int, std::vector<int>> VitaExportsByName; // compare index -> export indexes, ascending\n'
+                             '\tsize_t VitaExportsIndexed = 0;\n'
+                             '\tconst std::vector<int>* VitaExportsNamed(const NameString& name)\n\t{\n'
+                             '\t\tif (VitaExportsIndexed != ExportTable.size())\n\t\t{\n'
+                             '\t\t\tVitaExportsByName.clear();\n'
+                             '\t\t\tfor (size_t i = 0; i < ExportTable.size(); i++)\n'
+                             '\t\t\t\tVitaExportsByName[GetName(ExportTable[i].ObjName).GetCompareIndex()].push_back((int)i);\n'
+                             '\t\t\tVitaExportsIndexed = ExportTable.size();\n\t\t}\n'
+                             '\t\tauto it = VitaExportsByName.find(name.GetCompareIndex());\n'
+                             '\t\treturn it != VitaExportsByName.end() ? &it->second : nullptr;\n\t}\n'
+                             '#endif\n'),
+     'vita-exportsbyname')
+edit("Package/Package.cpp",
+     re.escape('\tbool isClass = className == "Class";\n\n\tsize_t count = ExportTable.size();\n\tfor (size_t index = 0; index < count; index++)\n\t{\n\t\tExportTableEntry& entry = ExportTable[index];\n\t\tif (GetName(entry.ObjName) != objectName)\n\t\t\tcontinue;\n'),
+     lambda m: ('#ifdef __vita__ // vita-findref\n'
+                '\tstatic const NameString classString("Class");\n'
+                '\tbool isClass = className == classString;\n'
+                '\tconst std::vector<int>* named = VitaExportsNamed(objectName);\n'
+                '\tsize_t count = named ? named->size() : 0;\n'
+                '\tfor (size_t vitaI = 0; vitaI < count; vitaI++)\n\t{\n'
+                '\t\tsize_t index = (size_t)(*named)[vitaI];\n'
+                '\t\tExportTableEntry& entry = ExportTable[index];\n'
+                '#else\n' + m.group(0) + '#endif\n'),
+     'vita-findref')
+edit("Package/Package.cpp",
+     re.escape('\t\tif (!obj && packageName == "UnrealI")\n'),
+     lambda m: ('#ifdef __vita__ // vita-unreali\n'
+                '\t\tstatic const NameString unrealI("UnrealI"), unrealShare("UnrealShare");\n'
+                '\t\tif (!obj && packageName == unrealI)\n'
+                '\t\t\tobj = Packages->GetPackage(unrealShare)->GetUObject(className, objectName, group);\n'
+                '\t\telse if (!obj && packageName == unrealShare)\n'
+                '\t\t\tobj = Packages->GetPackage(unrealI)->GetUObject(className, objectName, group);\n'
+                '#else\n' + m.group(0)),
+     'vita-unreali')
+edit("Package/Package.cpp",
+     re.escape('\t\t\tobj = Packages->GetPackage("UnrealI")->GetUObject(className, objectName, group);\n'),
+     lambda m: m.group(0) + '#endif // vita-unreali-end\n',
+     'vita-unreali-end')
+edit("Package/Package.h",
+     re.escape('\t\tArray<ImportTableEntry>().swap(ImportTable);\n\t\tNameHash.clear();\n'),
+     lambda m: m.group(0) + '\t\tstd::unordered_map<int, std::vector<int>>().swap(VitaExportsByName); // vita-forget-byname\n\t\tVitaExportsIndexed = 0;\n',
+     'vita-forget-byname')
+# 150. 'LoadMap done' also gives the speed of the whole-file reads alone (one read() of up to 20 MB each): the card's own speed,
+#      to tell whether loading (~8.5 MB/s over all reads) is bound by the card or by the many small reads.
+edit("Utils/File.cpp",
+     re.escape('\tstatic inline uint64_t statSlurps = 0, statSlurpBytes = 0;\n'),
+     lambda m: m.group(0) + '\tstatic inline uint64_t statSlurpMicros = 0; // vita-slurptime\n',
+     'vita-slurptime')
+edit("Utils/File.cpp",
+     re.escape('\t\tif (DeviceRead(0, whole.data(), (size_t)length) != (size_t)length)\n'),
+     lambda m: ('\t\tconst uint64_t vitaSlurpStart = sceKernelGetProcessTimeWide(); // vita-slurptime-read\n'
+                '\t\tconst bool vitaSlurpOk = DeviceRead(0, whole.data(), (size_t)length) == (size_t)length;\n'
+                '\t\tstatSlurpMicros += sceKernelGetProcessTimeWide() - vitaSlurpStart;\n'
+                '\t\tif (!vitaSlurpOk)\n'),
+     'vita-slurptime-read')
+edit("Utils/File.cpp",
+     re.escape('\t\tFileImpl::statWritten / 1048576.0, (unsigned long long)FileImpl::statWrites, FileImpl::statWriteMicros / 1000.0);\n\treturn text;\n'),
+     lambda m: (m.group(0)[:-len('\treturn text;\n')] +
+                '\tif (FileImpl::statSlurpMicros > 0) // vita-slurptime-text\n'
+                '\t\treturn std::string(text) + "; whole files at " + std::to_string((int)(FileImpl::statSlurpBytes / 1048576.0 * 1e6 / FileImpl::statSlurpMicros)) + " MB/s";\n'
+                '\treturn text;\n'),
+     'vita-slurptime-text')
+# 151. ActorShadow's Tick event natively when the class does not override it (VitaShadows.cpp VitaShadowTick; render.cfg
+#      shadow_tick=0: off): 52 shadows in Lev2_Fire1 took 1.1 ms a frame in the event for three lines of script.
+edit("Packages/Engine/Actors/UActor.cpp",
+     re.escape('\t\tVitaCallEvent(this, EventName::Tick, &vitaArg, 1);\n'),
+     lambda m: '\t\tif (!VitaShadowTick(this)) // vita-shadowtick\n\t' + m.group(0),
+     'vita-shadowtick')
+edit("Packages/Engine/Actors/UActor.cpp",
+     re.escape('#include "UActor.h"\n'),
+     lambda m: m.group(0) + '#ifdef __vita__ // vita-shadowtick-decl\nbool VitaShadowTick(UActor* actor); // vita/VitaShadows.cpp\n#endif\n',
+     'vita-shadowtick-decl')
+# 152. Fog maps while the camera orbits Harry (Lev2_Fire1, a fog zone): every surface's fog map was built and uploaded again
+#      every fog_rate frames once the eye had moved 1 unit ('node: fogmap' 3.4 -> 14.9 us, 'node: device' 8.7 -> 17 us a surface
+#      while turning: +4 ms). The fog seen on a texel changes with the angle of the eye's ray, i.e. with eye movement / distance:
+#      a fog map is now built again when the eye moved more than fog_move_percent (render.cfg, default 3; 0 = 1 unit as before)
+#      of its distance to the surface, at least 1 unit.
+edit("Light/LightSystem_Fog.cpp",
+     re.escape('\tconst bool vitaMoved = vitaFogNew || dot(de, de) > 1.0f || dot(dor, dor) > 0.01f;\n'),
+     lambda m: ('\tstatic const float vitaFogMove = VitaConfigInt("fog_move_percent", 3) * 0.01f; // vita-fogeyemove\n'
+                '\tconst vec3 vitaToSurface = coords.Origin - vitaEye;\n'
+                '\tconst float vitaFogLimit = std::max(1.0f, vitaFogMove * vitaFogMove * dot(vitaToSurface, vitaToSurface));\n'
+                '\tconst bool vitaMoved = vitaFogNew || dot(de, de) > vitaFogLimit || dot(dor, dor) > 0.01f;\n'),
+     'vita-fogeyemove')
+# 153. Fog maps while the camera orbits (#152 did not help: the eye moves ~4 units a frame, ~39 fog maps a frame were built and
+#      uploaded at ~107 us each): at most fog_budget (render.cfg, default 10; 0 = no limit) are built again a frame because the
+#      eye moved; a new fog map always is, and so is one that has waited 4 x fog_rate frames (no starving the ones drawn last).
+edit("Light/LightSystem_Fog.cpp",
+     re.escape('\telse if ((FrameCounter - fogtex.first >= vitaFogRate || FrameCounter < fogtex.first) && vitaMoved) // vita-fogmoved\n'),
+     lambda m: ('\tstatic const int vitaFogBudget = VitaConfigInt("fog_budget", 10); // vita-fogbudget\n'
+                '\tstatic uint64_t vitaFogBudgetFrame = 0;\n\tstatic int vitaFogBuilt = 0;\n'
+                '\tif (vitaFogBudgetFrame != (uint64_t)FrameCounter)\n\t{\n\t\tvitaFogBudgetFrame = (uint64_t)FrameCounter;\n\t\tvitaFogBuilt = 0;\n\t}\n'
+                '\tconst bool vitaFogWaitedLong = FrameCounter - fogtex.first >= 4 * vitaFogRate;\n'
+                '\tconst bool vitaFogInBudget = vitaFogBudget <= 0 || vitaFogBuilt < vitaFogBudget || vitaFogWaitedLong;\n'
+                '\tif (vitaFogNew)\n\t\tvitaFogBuilt++;\n'
+                '\telse if ((FrameCounter - fogtex.first >= vitaFogRate || FrameCounter < fogtex.first) && vitaMoved && vitaFogInBudget && ++vitaFogBuilt) // vita-fogmoved\n'),
+     'vita-fogbudget')
+# 154. The main view's mesh prepass starts before its level surfaces are drawn (VitaMeshPrepass.inc VitaPrepareMeshesBegin,
+#      VitaJobs::BeginAsync): the two workers skin while the main thread draws the surfaces; DrawOpaqueActors joins in and stores
+#      the results. After DrawPortals: the sky/mirror frames draw the same actors (their skeleton caches). prepass_early=0: off.
+edit("Render/VisibleFrame.cpp",
+     re.escape('\t\t{ VITA_TIMER(DrawPortals); DrawPortals(); }\n'),
+     lambda m: m.group(0) + '\t\tif (engine->LaunchInfo.IsKnowWonder()) // vita-prepass-early\n\t\t\tKW::VitaPrepareMeshesBegin(this);\n',
+     'vita-prepass-early')
+edit("Render/VisibleFrame.cpp",
+     re.escape('namespace KW { void VitaPrepareMeshes(VisibleFrame* frame); }\n'),
+     lambda m: m.group(0) + 'namespace KW { void VitaPrepareMeshesBegin(VisibleFrame* frame); } // vita-prepass-early-decl\n',
+     'vita-prepass-early-decl')
+# 155. LightSystem::BeginFrame (the light scan, the light tree, the light maps' dirty marks: ~2.2 ms in Lev2_Fire1) runs on a
+#      worker (VitaJobs::BeginAsync) while the main thread places the actors in the BSP ('bsp info', ~2.2 ms): the two touch
+#      different fields (actor->Light.*, the light tree / actor->BspInfo, the BSP's actor lists). The first frames run it on
+#      the main thread (the render.cfg readers' statics are made there, vita/CLAUDE.md). render.cfg light_begin_async=0: off.
+edit("Render/RenderScene.cpp",
+     re.escape('\t{ VITA_TIMER(LightBegin); engine->Level->Light.BeginFrame(); } // vita-lightbegin-timer\n'),
+     lambda m: ('#ifdef __vita__ // vita-lightbegin-async\n'
+                '\tstatic int vitaSceneFrames = 0;\n'
+                '\tstatic const bool vitaLightAsyncOn = VitaConfigInt("light_begin_async", 1) != 0;\n'
+                '\tconst bool vitaLightAsync = vitaLightAsyncOn && ++vitaSceneFrames > 3 &&\n'
+                '\t\tVitaJobs::BeginAsync([](void*, int) { engine->Level->Light.BeginFrame(); }, nullptr, 1);\n'
+                '\tif (!vitaLightAsync)\n#endif\n' + m.group(0)),
+     'vita-lightbegin-async')
+edit("Render/RenderScene.cpp",
+     re.escape('\tmat4 worldToView = Coords::ViewToRenderDev().ToMatrix() * Coords::Rotation(engine->CameraRotation).Inverse().ToMatrix() * Coords::Location(engine->CameraLocation).ToMatrix();\n\t{ VITA_TIMER(Process);'),
+     lambda m: ('#ifdef __vita__ // vita-lightbegin-join\n\tif (vitaLightAsync)\n\t{\n\t\tVITA_TIMER(LightBegin);\n\t\tVitaJobs::FinishAsync();\n\t}\n#endif\n' + m.group(0)),
+     'vita-lightbegin-join')
+edit("Render/RenderScene.cpp",
+     re.escape('#include "Precomp.h"\n'),
+     lambda m: m.group(0) + '#ifdef __vita__ // vita-jobs-scene-inc\n#include "VitaJobs.h"\n#endif\n',
+     'vita-jobs-scene-inc')
+edit("Render/RenderScene.cpp",
+     re.escape('\tstatic const bool vitaLightAsyncOn = VitaConfigInt("light_begin_async", 1) != 0;\n'),
+     lambda m: m.group(0) + ('\tif (vitaSceneFrames < 3) // vita-lightbegin-touch: BeginFrame reads these only in some branches: made here, not on a worker\n'
+                             '\t\t(void)(VitaStillLights() + VitaLightAnimDivider() + VitaDynamicLightList() + VitaLightmapSkip() + VitaLightmapIncremental());\n'),
+     'vita-lightbegin-touch')
+# 156. AttachDecal (actor shadows: ~5 a frame in Lev2_Fire1, 'decal attach trace' 168 us each) traced the whole ray through
+#      the BSP, collected every hit, sorted them and used the first. TraceRayModel::VitaTraceFirst finds that first hit alone:
+#      the same walk in the same order, but every test made against the nearest hit so far (a subtree or polygon past it is
+#      skipped; a later hit at the same distance loses, as after the stable sort).
+edit("Collision/BottomLevel/TraceRayModel.h",
+     re.escape('\tbool TraceAnyHit(UActor* owner, UModel* model, const dvec3& origin, double tmin, const dvec3& dirNormalized, double tmax, bool visibilityOnly);\n'),
+     lambda m: m.group(0) + ('#ifdef __vita__ // vita-tracefirst-h\n'
+                             '\tCollisionHitList VitaTraceFirst(UActor* owner, UModel* model, const dvec3& origin, double tmin, const dvec3& dirNormalized, double tmax, bool visibilityOnly);\n'
+                             'private:\n'
+                             '\tvoid VitaTraceFirst(const dvec3& origin, double tmin, const dvec3& dirNormalized, double& best, bool visibilityOnly, BspNode* node, CollisionHit& hit, bool& found);\n'
+                             'public:\n#endif\n'),
+     'vita-tracefirst-h')
+edit("Collision/BottomLevel/TraceRayModel.cpp",
+     re.escape('bool TraceRayModel::TraceAnyHit(UActor* owner, UModel* model, const dvec3& origin, double tmin, const dvec3& dirNormalized, double tmax, bool visibilityOnly)\n'),
+     lambda m: ('#ifdef __vita__ // vita-tracefirst\n'
+                'CollisionHitList TraceRayModel::VitaTraceFirst(UActor* owner, UModel* model, const dvec3& origin, double tmin, const dvec3& dirNormalized, double tmax, bool visibilityOnly)\n{\n'
+                '\tOwner = owner;\n\tModel = model;\n\tCollisionHitList hits;\n\tCollisionHit hit;\n\tbool found = false;\n\tdouble best = tmax;\n'
+                '\tVitaTraceFirst(origin, tmin, dirNormalized, best, visibilityOnly, &Model->Nodes.front(), hit, found);\n'
+                '\tif (found)\n\t\thits.push_back(hit);\n\treturn hits;\n}\n\n'
+                'void TraceRayModel::VitaTraceFirst(const dvec3& origin, double tmin, const dvec3& dirNormalized, double& best, bool visibilityOnly, BspNode* node, CollisionHit& hit, bool& found)\n{\n'
+                '\tBspNode* polynode = node;\n\twhile (true)\n\t{\n'
+                '\t\tif (!visibilityOnly || (polynode->NodeFlags & NF_NotVisBlocking) == 0)\n\t\t{\n'
+                '\t\t\tdouble t = NodeRayIntersect(origin, tmin, dirNormalized, best, polynode);\n'
+                '\t\t\tif (t >= tmin && t < best)\n\t\t\t{\n'
+                '\t\t\t\tbest = t;\n\t\t\t\tfound = true;\n'
+                '\t\t\t\thit = { (float)t, vec3(node->PlaneX, node->PlaneY, node->PlaneZ), Owner, polynode, node };\n'
+                '\t\t\t\tif (dot(to_dvec3(hit.Normal), dirNormalized) > 0.0)\n\t\t\t\t\thit.Normal = -hit.Normal;\n'
+                '\t\t\t}\n\t\t}\n'
+                '\t\tif (polynode->Plane < 0) break;\n\t\tpolynode = &Model->Nodes[polynode->Plane];\n\t}\n\n'
+                '\tdvec4 plane = { node->PlaneX, node->PlaneY, node->PlaneZ, -node->PlaneW };\n'
+                '\tdouble fromSide = dot(dvec4(origin, 1.0), plane);\n'
+                '\tdouble toSide = dot(dvec4(origin + dirNormalized * best, 1.0), plane);\n'
+                '\tif (node->Front >= 0 && (fromSide >= 0.0 || toSide >= 0.0))\n'
+                '\t\tVitaTraceFirst(origin, tmin, dirNormalized, best, visibilityOnly, &Model->Nodes[node->Front], hit, found);\n'
+                '\ttoSide = dot(dvec4(origin + dirNormalized * best, 1.0), plane); // best may be nearer now\n'
+                '\tif (node->Back >= 0 && (fromSide <= 0.0 || toSide <= 0.0))\n'
+                '\t\tVitaTraceFirst(origin, tmin, dirNormalized, best, visibilityOnly, &Model->Nodes[node->Back], hit, found);\n'
+                '}\n#endif\n\n' + m.group(0)),
+     'vita-tracefirst')
+edit("Packages/Engine/Actors/UDecal.cpp",
+     re.escape('{ VITA_PROBE(DecalTrace); hits = XLevel()->Collision.TraceDecal(to_dvec3(Location()), 0.0f, to_dvec3(traceDirection), traceDistance, false); }'),
+     lambda m: ('{ VITA_PROBE(DecalTrace); hits = XLevel()->Collision.VitaTraceDecalFirst(to_dvec3(Location()), 0.0f, to_dvec3(traceDirection), traceDistance, false); } // vita-decalfirst'),
+     'vita-decalfirst')
+edit("Collision/TopLevel/CollisionSystem.h",
+     re.escape('\tCollisionHitList TraceDecal(const dvec3& origin, double tmin, const dvec3& dirNormalized, double tmax, bool visibilityOnly);\n'),
+     lambda m: m.group(0) + '#ifdef __vita__ // vita-decalfirst-h\n\tCollisionHitList VitaTraceDecalFirst(const dvec3& origin, double tmin, const dvec3& dirNormalized, double tmax, bool visibilityOnly);\n#endif\n',
+     'vita-decalfirst-h')
+edit("Collision/TopLevel/CollisionSystem.cpp",
+     re.escape('CollisionHit CollisionSystem::TraceFirstHit('),
+     lambda m: ('#ifdef __vita__ // vita-decalfirst-fn: TraceDecal\'s first hit alone (#156)\n'
+                'CollisionHitList CollisionSystem::VitaTraceDecalFirst(const dvec3& origin, double tmin, const dvec3& dirNormalized, double tmax, bool visibilityOnly)\n{\n'
+                '\tTraceRayModel trace;\n\treturn trace.VitaTraceFirst(LevelInfo, Level->Model, origin, tmin, dirNormalized, tmax, visibilityOnly);\n}\n#endif\n\n' + m.group(0)),
+     'vita-decalfirst-fn')
+# 157. SingleLineCheck with only TRACE_Movers / TRACE_Level (the walking physics' ledge and step probes: most of the ~90 line
+#      checks a frame in Lev2_Fire1, snails) can accept only the level or a mover, yet every actor in the box was line checked
+#      against its primitive first. Such a check now skips the other actors before their primitive test (the answer is the
+#      same: SingleLineCheck would pass over them).
+edit("../../knowwonder/KWLevelCheck.cpp",
+     re.escape('\tArray<CheckResult> ActorLineCheck(const vec3& end, const vec3& start, const vec3& extent, uint8_t extraNodeFlags)\n\t{\n'),
+     lambda m: ('#ifdef __vita__ // vita-moversonly\n\tstatic bool vitaMoversOnly = false; // SingleLineCheck can accept only movers (and the level)\n#endif\n' + m.group(0)),
+     'vita-moversonly')
+edit("../../knowwonder/KWLevelCheck.cpp",
+     re.escape('\t\t\tif (!InHash(actor))\n\t\t\t\tcontinue;\n\t\t\tCheckResult hit;\n\t\t\thit.Time = 0.0f;\n\t\t\tbool vitaMiss;\n'),
+     lambda m: m.group(0).replace('\t\t\t\tcontinue;\n', '\t\t\t\tcontinue;\n#ifdef __vita__ // vita-moversonly-skip\n\t\t\tif (vitaMoversOnly && !UObject::TryCast<UMover>(actor))\n\t\t\t\tcontinue;\n#endif\n', 1),
+     'vita-moversonly-skip')
+edit("../../knowwonder/KWLevelCheck.cpp",
+     re.escape('\t\tfor (const CheckResult& r : MultiLineCheck(end, start, extent, traceActors, levelInfo, extraNodeFlags))\n'),
+     lambda m: ('#ifdef __vita__ // vita-moversonly-set\n'
+                '\t\tvitaMoversOnly = (traceFlags & (TRACE_Blocking | TRACE_Others | TRACE_ZoneChanges)) == 0;\n'
+                '\t\tArray<CheckResult> vitaResults = MultiLineCheck(end, start, extent, traceActors, levelInfo, extraNodeFlags);\n'
+                '\t\tvitaMoversOnly = false;\n'
+                '\t\tfor (const CheckResult& r : vitaResults)\n#else\n' + m.group(0) + '#endif\n'),
+     'vita-moversonly-set')
+# 158. The scripts' actor iterators (AllActors, RadiusActors, VisibleActors, ...) test every actor of the level with IsA(name),
+#      a walk up the class chain comparing names: GameReplicationInfo.Timer's foreach AllActors(class'PlayerReplicationInfo')
+#      every 0.2 s over ~1300 actors was 0.66 ms a frame on average in Lev2_Fire1. The answer depends only on the actor's class:
+#      VitaIsA keeps it in a 1024-entry direct-mapped table keyed by (class, name) (classes are never freed, #146).
+edit("VM/Iterator.cpp",
+     r'([A-Za-z_][A-Za-z_0-9.]*)->IsA\(BaseClass->Name\)',
+     lambda m: 'VITA_ISA(' + m.group(1) + ', BaseClass->Name)',
+     'VITA_ISA(')
+edit("VM/Iterator.cpp",
+     re.escape('#include <algorithm>\n'),
+     lambda m: m.group(0) + ('#ifdef __vita__ // vita-isa-cache: IsA(name) by the object\'s class, remembered (#158)\n'
+                             'static bool VitaIsA(const UObject* obj, const NameString& name)\n{\n'
+                             '\tstruct Entry { const void* cls; int name; bool result; };\n'
+                             '\tstatic Entry table[1024];\n'
+                             '\tconst int key = name.GetCompareIndex();\n'
+                             '\tEntry& e = table[(((uintptr_t)obj->Class >> 4) ^ ((uintptr_t)key * 2654435761u)) & 1023];\n'
+                             '\tif (e.cls == obj->Class && e.name == key)\n\t\treturn e.result;\n'
+                             '\tconst bool result = obj->IsA(name);\n'
+                             '\te = { obj->Class, key, result };\n'
+                             '\treturn result;\n}\n'
+                             '#define VITA_ISA(o, n) VitaIsA((o), (n))\n#else\n#define VITA_ISA(o, n) (o)->IsA(n)\n#endif\n'),
+     'vita-isa-cache')
+# 159. '@script <name> <function>' also takes a class name: the first actor of that class (map actors can have other names).
+edit("../../knowwonder/KWDebug.cpp",
+     re.escape('\t\t\t\t\tif (a && a->Name.ToString() == actorName)\n'),
+     lambda m: '\t\t\t\t\tif (a && (a->Name.ToString() == actorName || a->Class->Name.ToString() == actorName)) // vita-script-byclass\n',
+     'vita-script-byclass')
+# 160. VitaShadows.cpp does all of ActorShadow.Update natively when the owner moved (render.cfg shadow_native=0: the script):
+#      the same natives in the order of its bytecode (@script ActorShadow Update): DetachDecal, GetRenderExtent (KW's,
+#      through KW::VitaRenderExtent), the int Max of the bytecode, SetLocation = FarMoveActor, SetRotation = MoveActor,
+#      AttachDecal. ~350 us a moving shadow, of which ~120 us AttachDecal.
+edit("../../knowwonder/KWCollision.cpp",
+     re.escape('\t\tReturnValue = box.max - box.min;\n\t}\n'),
+     lambda m: m.group(0) + '\n#ifdef __vita__ // vita-renderextent: GetRenderExtent for vita/VitaShadows.cpp\n\tvec3 VitaRenderExtent(UActor* a)\n\t{\n\t\tvec3 r;\n\t\tNGetRenderExtent(a, r);\n\t\treturn r;\n\t}\n#endif\n',
+     'vita-renderextent')
+# 161. Every line, point, radius and encroachment check asked CollisionSystem::ActorsInBox for a new Array of the actors in its
+#      box (a heap allocation each: newlib's malloc takes a lock): ~80 line checks a frame in Lev2_Fire1 spent ~10 us each
+#      outside the hash query and the primitives. VitaActorsInBox fills a list given to it; KWLevelCheck.cpp's VitaBoxList
+#      hands out one of 4 kept lists by nesting depth (deeper: a local one). The same actors in the same order.
+edit("Collision/TopLevel/CollisionSystem.h",
+     re.escape('\tArray<UActor*> ActorsInBox(const vec3& boxMin, const vec3& boxMax); // every actor in the hash cells the box touches\n'),
+     lambda m: m.group(0) + '#ifdef __vita__ // vita-boxfill-h\n\tvoid VitaActorsInBox(const vec3& boxMin, const vec3& boxMax, Array<UActor*>& result); // the same, into a list kept by the caller\n#endif\n',
+     'vita-boxfill-h')
+edit("Collision/TopLevel/CollisionSystem.cpp",
+     re.escape('void CollisionSystem::SetLevel(ULevelInfo* levelInfo, ULevel* level)\n'),
+     lambda m: ('#ifdef __vita__ // vita-boxfill: ActorsInBox into the caller\'s list (#161)\n'
+                'void CollisionSystem::VitaActorsInBox(const vec3& boxMin, const vec3& boxMax, Array<UActor*>& result)\n{\n'
+                '\tresult.clear();\n'
+                '\tvec3 center = (boxMin + boxMax) * 0.5f;\n\tvec3 extents = (boxMax - boxMin) * 0.5f;\n'
+                '\tivec3 start = GetStartExtents(center, extents);\n\tivec3 end = GetEndExtents(center, extents);\n'
+                '\tif (end.x - start.x >= 100 || end.y - start.y >= 100 || end.z - start.z >= 100)\n\t\treturn;\n'
+                '\tstatic uint32_t vitaStamp = 0x80000000u; // its own sequence: ActorsInBox\'s stamps count up from 1\n'
+                '\tif (++vitaStamp == 0)\n\t\tvitaStamp = 0x80000000u;\n'
+                '\tfor (int z = start.z; z < end.z; z++)\n\t\tfor (int y = start.y; y < end.y; y++)\n\t\t\tfor (int x = start.x; x < end.x; x++)\n\t\t\t{\n'
+                '\t\t\t\tauto it = CollisionActors.find(GetBucketId(x, y, z));\n\t\t\t\tif (it == CollisionActors.end())\n\t\t\t\t\tcontinue;\n'
+                '\t\t\t\tfor (UActor* actor : it->second)\n\t\t\t\t\tif (actor->Collision.VitaBoxStamp != vitaStamp)\n\t\t\t\t\t{\n'
+                '\t\t\t\t\t\tactor->Collision.VitaBoxStamp = vitaStamp;\n\t\t\t\t\t\tresult.push_back(actor);\n\t\t\t\t\t}\n\t\t\t}\n}\n#endif\n\n' + m.group(0)),
+     'vita-boxfill')
+edit("../../knowwonder/KWLevelCheck.cpp",
+     re.escape('\tstatic bool InHash(UActor* actor)\n'),
+     lambda m: ('#ifdef __vita__ // vita-boxlist: the actors in a box, in a kept list (#161)\n'
+                '\tstruct VitaBoxList\n\t{\n'
+                '\t\tstatic inline Array<UActor*> pool[4];\n\t\tstatic inline int depth = 0;\n'
+                '\t\tArray<UActor*> local;\n\t\tArray<UActor*>* list;\n'
+                '\t\tVitaBoxList(const vec3& boxMin, const vec3& boxMax)\n\t\t{\n'
+                '\t\t\tlist = depth < 4 ? &pool[depth] : &local;\n\t\t\tdepth++;\n'
+                '\t\t\tHash().VitaActorsInBox(boxMin, boxMax, *list);\n\t\t}\n'
+                '\t\t~VitaBoxList() { depth--; }\n'
+                '\t\tVitaBoxList(const VitaBoxList&) = delete;\n'
+                '\t\tUActor** begin() { return list->data(); }\n'
+                '\t\tUActor** end() { return list->data() + list->size(); }\n\t};\n'
+                '#define VITA_ACTORS_IN_BOX(a, b) VitaBoxList(a, b)\n'
+                '#else\n#define VITA_ACTORS_IN_BOX(a, b) Hash().ActorsInBox(a, b)\n#endif\n\n' + m.group(0)),
+     'vita-boxlist')
+edit("../../knowwonder/KWLevelCheck.cpp",
+     re.escape('\t\tArray<UActor*> vitaInBox;\n\t\t{ VITA_PROBE(CheckHash); vitaInBox = Hash().ActorsInBox(boxMin - extent, boxMax + extent); } // vita-checkprobe-hash\n\t\tfor (UActor* actor : vitaInBox)\n'),
+     lambda m: '\t\tfor (UActor* actor : VITA_ACTORS_IN_BOX(boxMin - extent, boxMax + extent)) // vita-boxlist-line (was vita-checkprobe-hash)\n',
+     'vita-boxlist-line')
+edit("../../knowwonder/KWLevelCheck.cpp",
+     r'for \(UActor\* (\w+) : Hash\(\)\.ActorsInBox\(',
+     lambda m: 'for (UActor* ' + m.group(1) + ' : VITA_ACTORS_IN_BOX(',
+     'VITA_ACTORS_IN_BOX(location')
+# 162. Every jump of a script (each 'if' that is false, each loop) looked its target up with OffsetToExpression.find: a
+#      std::map of every expression of the function, ~10 nodes deep, a cache miss each. FindStatementIndex now reads a
+#      dense table (code offset -> statement index, int16), made from the map the first time the function jumps.
+edit("VM/Bytecode.h",
+     re.escape('\tint FindStatementIndex(uint16_t offset) const\n\t{\n\t\tauto it = OffsetToExpression.find(offset);\n\t\treturn it != OffsetToExpression.end() ? it->second->StatementIndex : -1;\n\t}\n'),
+     lambda m: ('#ifdef __vita__ // vita-jumptable\n'
+                '\tmutable std::vector<int16_t> VitaJumpTable; // code offset -> statement index (-1: none)\n'
+                '\tmutable size_t VitaJumpTableFor = 0;     // OffsetToExpression.size() it was made from\n'
+                '\tint FindStatementIndex(uint16_t offset) const\n\t{\n'
+                '\t\tif (VitaJumpTableFor != OffsetToExpression.size() || VitaJumpTable.empty())\n\t\t{\n'
+                '\t\t\tVitaJumpTable.assign(OffsetToExpression.empty() ? 1 : (size_t)OffsetToExpression.rbegin()->first + 1, (int16_t)-1);\n'
+                '\t\t\tfor (const auto& it : OffsetToExpression)\n'
+                '\t\t\t\tVitaJumpTable[it.first] = (int16_t)it.second->StatementIndex;\n'
+                '\t\t\tVitaJumpTableFor = OffsetToExpression.size();\n\t\t}\n'
+                '\t\treturn offset < VitaJumpTable.size() ? VitaJumpTable[offset] : -1;\n\t}\n'
+                '#else\n' + m.group(0) + '#endif\n'),
+     'vita-jumptable')
+# 163. A native function without a native index (registered by name: LinkSkelAnim, the Decal natives, ...) was found again on
+#      every call in NativeByName, a std::map keyed by two names. The map's entry is kept in the UFunction (map entries
+#      do not move).
+edit("Packages/Core/UStruct.h",
+     re.escape("\tint8_t VitaFastOp = -1; // vita-fastop-field"),
+     lambda m: "\tvoid* VitaNativeByName = nullptr; // vita-nativename-field: its NativeByName entry, once found\n" + m.group(0),
+     'vita-nativename-field')
+edit("VM/Frame.cpp",
+     re.escape('\t\tcallback = &NativeFunctions::NativeByName[{ func->Name, func->NativeStruct->Name }];\n'),
+     lambda m: ('#ifdef __vita__ // vita-nativename\n\t{\n'
+                '\t\tif (!func->VitaNativeByName)\n'
+                '\t\t\tfunc->VitaNativeByName = &NativeFunctions::NativeByName[{ func->Name, func->NativeStruct->Name }];\n'
+                '\t\tcallback = static_cast<NativeFuncHandler*>(func->VitaNativeByName);\n\t}\n'
+                '#else\n' + m.group(0) + '#endif\n'),
+     'vita-nativename')
+# 164. The sky frame (a SkyZoneInfo seen through the fake backdrop) walked the whole level's BSP with the sky's camera, every
+#      node box tested against its clipper (~1.7 ms a frame in Lev2_Fire1, 2.4 turning). When the sky zone is sealed (no
+#      PF_Portal surface on its border) nothing outside it can be seen from inside: the walk skips a subtree none of whose
+#      nodes touch the sky zone (zones worked out from every node's Zone0/Zone1 once per model, not the file's ZoneMask).
+#      What it skips would have been hidden by the zone's own walls. render.cfg sky_zone_walk=0: off.
+edit("Render/VisibleFrame.cpp",
+     re.escape('void VisibleFrame::Process(const vec3& location, const mat4& worldToView, const Coords& viewRotation, bool mirrorFlag, int portalDepth, const Array<PortalSpan>& portalSpans, const vec4& portalPlane)\n'),
+     lambda m: ('#ifdef __vita__ // vita-skyzone: see apply_fixes.sh #164\n'
+                'static uint64_t VitaWalkZoneBit = 0;              // the sky zone of the frame being walked (0: walk everything)\n'
+                'static std::vector<uint64_t> VitaNodeZones;       // zones a node\'s subtree touches (with its coplanar nodes)\n'
+                'static uint64_t VitaPortalZones = 0;              // zones with a PF_Portal surface on their border\n'
+                'static UModel* VitaZonesModel = nullptr;\n'
+                'static size_t VitaZonesNodes = 0;\n'
+                'static uint64_t VitaZoneBit(int zone) { return zone >= 0 && zone < 64 ? 1ULL << zone : 0; }\n'
+                'static uint64_t VitaComputeZones(UModel* model, int index)\n{\n'
+                '\tBspNode& node = model->Nodes[index];\n'
+                '\tuint64_t mask = 0;\n'
+                '\tfor (BspNode* p = &node;; p = &model->Nodes[p->Plane])\n\t{\n'
+                '\t\tmask |= VitaZoneBit(p->Zone0) | VitaZoneBit(p->Zone1);\n'
+                '\t\tif (p->Surf >= 0 && (model->Surfaces[p->Surf].PolyFlags & PF_Portal))\n'
+                '\t\t\tVitaPortalZones |= VitaZoneBit(p->Zone0) | VitaZoneBit(p->Zone1);\n'
+                '\t\tif (p != &node && p->Front >= 0) mask |= VitaComputeZones(model, p->Front);\n'
+                '\t\tif (p != &node && p->Back >= 0) mask |= VitaComputeZones(model, p->Back);\n'
+                '\t\tif (p->Plane < 0) break;\n\t}\n'
+                '\tif (node.Front >= 0) mask |= VitaComputeZones(model, node.Front);\n'
+                '\tif (node.Back >= 0) mask |= VitaComputeZones(model, node.Back);\n'
+                '\tVitaNodeZones[index] = mask;\n'
+                '\treturn mask;\n}\n'
+                'static uint64_t VitaSkyWalkBit(int viewZone)\n{\n'
+                '\tstatic const bool on = VitaConfigInt("sky_zone_walk", 1) != 0;\n'
+                '\tUModel* model = engine->Level->Model;\n'
+                '\tif (!on || !model || model->Nodes.empty() || viewZone <= 0 || viewZone >= 64)\n\t\treturn 0;\n'
+                '\tUZoneInfo* zone = engine->GetZoneActor(viewZone);\n'
+                '\tif (!zone || !zone->IsA("SkyZoneInfo"))\n\t\treturn 0;\n'
+                '\tif (VitaZonesModel != model || VitaZonesNodes != model->Nodes.size())\n\t{\n'
+                '\t\tVitaZonesModel = model;\n\t\tVitaZonesNodes = model->Nodes.size();\n'
+                '\t\tVitaPortalZones = 0;\n\t\tVitaNodeZones.assign(model->Nodes.size(), 0);\n'
+                '\t\tVitaComputeZones(model, 0);\n\t}\n'
+                '\tconst uint64_t bit = VitaZoneBit(viewZone);\n'
+                '\tstatic int told = -1;\n'
+                '\tif (told != viewZone)\n\t{\n\t\ttold = viewZone;\n'
+                '\t\tsize_t kept = 0;\n\t\tfor (uint64_t m : VitaNodeZones) kept += (m & bit) ? 1 : 0;\n'
+                '\t\tLogMessage("VitaSkyWalk: sky zone " + std::to_string(viewZone) + (VitaPortalZones & bit ? " has a zone portal: whole BSP walked" : " sealed: walk keeps " + std::to_string(kept) + " of " + std::to_string(VitaNodeZones.size()) + " nodes"));\n\t}\n'
+                '\treturn (VitaPortalZones & bit) ? 0 : bit;\n}\n'
+                '#endif\n\n' + m.group(0)),
+     'vita-skyzone')
+edit("Render/VisibleFrame.cpp",
+     re.escape('void VisibleFrame::ProcessNode(BspNode* node)\n{\n'),
+     lambda m: (m.group(0) + '#ifdef __vita__ // vita-skyzone-skip\n'
+                '\tif (VitaWalkZoneBit && (VitaNodeZones[node - engine->Level->Model->Nodes.data()] & VitaWalkZoneBit) == 0)\n\t\treturn;\n'
+                '#endif\n'),
+     'vita-skyzone-skip')
+edit("Render/VisibleFrame.cpp",
+     re.escape('\tif (!vitaParallel)\n#endif\n\tProcessNode(&engine->Level->Model->Nodes[0]);\n'),
+     lambda m: ('\tVitaWalkZoneBit = (!vitaParallel && PortalDepth > 0) ? VitaSkyWalkBit(ViewZone) : 0; // vita-skyzone-set\n' + m.group(0) +
+                '#ifdef __vita__\n\tVitaWalkZoneBit = 0;\n#endif\n'),
+     'vita-skyzone-set')
+# 165. Laps in DrawPortals' sky frame (sort of the portal spans / Process / Draw): the sky step stayed 1.7 ms after #164.
+edit("Render/VisibleFrame.cpp",
+     re.escape('\tfor (VisiblePortal& portal : Portals)\n\t{\n\t\t// BspClipper requires the visible spans list to be sorted\n'),
+     lambda m: m.group(0).replace('\t{\n', '\t{\n\t\tVITA_LAP_START; // vita-skylaps\n', 1),
+     'vita-skylaps')
+edit("Render/VisibleFrame.cpp",
+     re.escape('\t\t\tVisibleFrame skyframe;\n\t\t\tskyframe.Process('),
+     lambda m: '\t\t\tVITA_LAP(SkySort); // vita-skylaps-sort\n' + m.group(0),
+     'vita-skylaps-sort')
+edit("Render/VisibleFrame.cpp",
+     re.escape('\t\t\tDevice->SetSceneNode(&skyframe.Frame);\n\t\t\tskyframe.Draw();\n\t\t\tDevice->ClearZ();\n'),
+     lambda m: '\t\t\tVITA_LAP(SkyProcess); // vita-skylaps2\n' + m.group(0) + '\t\t\tVITA_LAP(SkyDraw);\n',
+     'vita-skylaps2')
+# 166. UpdateActorShadows runs again for the sky frame (and any mirror/warp frame) of the same game frame: ~1 ms in Lev2_Fire1
+#      ('sky: process' 1.1 ms with a 16-node walk after #164), every shadow pair's visibility tests and bone check again.
+#      Nothing ticks between the main frame's Process and the portal frames', so a shadow handled once this frame (its
+#      Update made, or answered by VitaShadowSkip) would only get bUpdated = true and the same Opacity again: skipped.
+edit("../../knowwonder/KWActorRender.cpp",
+     re.escape('\t\t\tvitaPairs.clear();\n'),
+     lambda m: m.group(0) + '\t\t\tvitaDone.clear(); // vita-shadowonce\n',
+     'vita-shadowonce')
+edit("../../knowwonder/KWActorRender.cpp",
+     re.escape('\t\tstatic std::vector<std::pair<UActor*, UActor*>> vitaPairs;\n'),
+     lambda m: m.group(0) + '\t\tstatic std::vector<char> vitaDone; // vita-shadowonce-decl: handled already this game frame\n',
+     'vita-shadowonce-decl')
+edit("../../knowwonder/KWActorRender.cpp",
+     re.escape('\t\t\tUActor* actor = vitaPairs[i].first;\n\t\t\tUActor* shadow = vitaPairs[i].second;\n'),
+     lambda m: ('\t\t\tif (vitaDone.size() != vitaPairs.size()) // vita-shadowonce-skip\n\t\t\t\tvitaDone.assign(vitaPairs.size(), 0);\n'
+                '\t\t\tif (vitaDone[i])\n\t\t\t\tcontinue;\n' + m.group(0)),
+     'vita-shadowonce-skip')
+edit("../../knowwonder/KWActorRender.cpp",
+     re.escape('\t\t\t{ VITA_PROBE(ShadowSkipped); vitaSkip = VitaShadowSkip(actor, shadow); } // vita-shadowprobes\n'),
+     lambda m: '\t\t\tvitaDone[i] = 1; // vita-shadowonce-mark: Update or its native answer, once a game frame\n' + m.group(0),
+     'vita-shadowonce-mark')
+# 167. Laps in VisibleFrame::Process of portal frames (PortalDepth > 0): 'sky: process' stayed ~1.1 ms with a 16-node walk.
+edit("Render/VisibleFrame.cpp",
+     re.escape('\tSetupSceneFrame(worldToView);\n'),
+     lambda m: '\tVitaProbes::Lap vitaPortalLap; // vita-portallaps\n\tconst bool vitaPortalLaps = portalDepth > 0;\n' + m.group(0) + '\tif (vitaPortalLaps) vitaPortalLap.Mark(VitaProbes::PortalSetup);\n',
+     'vita-portallaps')
+edit("Render/VisibleFrame.cpp",
+     re.escape('\tClipper.Setup(Frame.Projection * Frame.WorldToView * Frame.ObjectToWorld, portalSpans, portalPlane);\n'),
+     lambda m: m.group(0) + '\tif (vitaPortalLaps) vitaPortalLap.Mark(VitaProbes::PortalClipper); // vita-portallaps-clip\n',
+     'vita-portallaps-clip')
+edit("Render/VisibleFrame.cpp",
+     re.escape('\tPortals.clear();\n\n\tif (engine->LaunchInfo.IsKnowWonder())\n'),
+     lambda m: m.group(0).replace('\tPortals.clear();\n', '\tPortals.clear();\n\tif (vitaPortalLaps) vitaPortalLap.Mark(VitaProbes::PortalZone); // vita-portallaps-zone\n', 1),
+     'vita-portallaps-zone')
+edit("Render/VisibleFrame.cpp",
+     re.escape('{ VITA_PROBE(ProcShadows); KW::UpdateActorShadows(this); } // vita-probe-shadows\n'),
+     lambda m: m.group(0) + '\tif (vitaPortalLaps) vitaPortalLap.Mark(VitaProbes::PortalShadows); // vita-portallaps-shadows\n',
+     'vita-portallaps-shadows')
+edit("Render/VisibleFrame.cpp",
+     re.escape('#ifdef __vita__\n\tVitaWalkZoneBit = 0;\n#endif\n'),
+     lambda m: m.group(0) + '\tif (vitaPortalLaps) vitaPortalLap.Mark(VitaProbes::PortalWalk); // vita-portallaps-walk\n',
+     'vita-portallaps-walk')
+# 168. (vita-spansort2: + spans that touch merged) DrawPortals sorted a portal's spans (by y, then x0) with std::sort: thousands of spans for the sky windows of Lev2_Fire1,
+#      'sky: sort spans' ~0.4 ms a frame. They are put in row buckets (counting sort by y) and each row's few spans sorted by
+#      insertion: the same order (the spans of a row do not overlap, so no two have the same y and x0).
+edit("Render/VisibleFrame.cpp",
+     re.escape('\t\tstd::sort(portal.Spans.begin(), portal.Spans.end(), [](const PortalSpan& a, const PortalSpan& b) { return a.y != b.y ? a.y < b.y: a.x0 < b.x0; });\n'),
+     lambda m: ('#ifdef __vita__ // vita-spansort2\n\t\t{\n'
+                '\t\t\tstatic std::vector<int> rowStart;\n\t\t\tstatic Array<PortalSpan> sorted;\n'
+                '\t\t\tint maxY = 0;\n\t\t\tbool ok = true;\n'
+                '\t\t\tfor (const PortalSpan& span : portal.Spans)\n\t\t\t{\n'
+                '\t\t\t\tif (span.y < 0 || span.y > 4096) { ok = false; break; }\n'
+                '\t\t\t\tmaxY = std::max(maxY, (int)span.y);\n\t\t\t}\n'
+                '\t\t\tif (ok && !portal.Spans.empty())\n\t\t\t{\n'
+                '\t\t\t\trowStart.assign(maxY + 2, 0);\n'
+                '\t\t\t\tfor (const PortalSpan& span : portal.Spans)\n\t\t\t\t\trowStart[span.y + 1]++;\n'
+                '\t\t\t\tfor (int y = 0; y <= maxY; y++)\n\t\t\t\t\trowStart[y + 1] += rowStart[y];\n'
+                '\t\t\t\tsorted.resize(portal.Spans.size());\n'
+                '\t\t\t\tfor (const PortalSpan& span : portal.Spans)\n\t\t\t\t\tsorted[rowStart[span.y]++] = span;\n'
+                '\t\t\t\tfor (size_t i = 1; i < sorted.size(); i++)\n\t\t\t\t{\n'
+                '\t\t\t\t\tPortalSpan item = sorted[i];\n\t\t\t\t\tsize_t k = i;\n'
+                '\t\t\t\t\twhile (k > 0 && sorted[k - 1].y == item.y && item.x0 < sorted[k - 1].x0)\n\t\t\t\t\t{\n'
+                '\t\t\t\t\t\tsorted[k] = sorted[k - 1];\n\t\t\t\t\t\tk--;\n\t\t\t\t\t}\n'
+                '\t\t\t\t\tsorted[k] = item;\n\t\t\t\t}\n'
+                '\t\t\t\tsize_t n = 0; // spans that touch (x1 == the next x0 on the row) made one: the same union, the same clipper\n'
+                '\t\t\t\tfor (size_t i = 0; i < sorted.size(); i++)\n\t\t\t\t{\n'
+                '\t\t\t\t\tif (n > 0 && portal.Spans[n - 1].y == sorted[i].y && portal.Spans[n - 1].x1 == sorted[i].x0)\n'
+                '\t\t\t\t\t\tportal.Spans[n - 1].x1 = sorted[i].x1;\n'
+                '\t\t\t\t\telse\n\t\t\t\t\t\tportal.Spans[n++] = sorted[i];\n\t\t\t\t}\n'
+                '\t\t\t\tportal.Spans.resize(n);\n\t\t\t}\n'
+                '\t\t\telse\n\t' + m.group(0).lstrip('\t').join(['\t\t\t', '']) +
+                '\t\t}\n#else\n' + m.group(0) + '#endif\n'),
+     'vita-spansort2')
+# 169. vm_laps=1 also counts the expression nodes run by kind (log line 'expressions run a frame'), to see where the
+#      interpreter's ~1 us a statement goes.
+edit("VM/Frame.cpp",
+     re.escape('\t\t\tint pass = vmstack.pass[vmstack.exprEnd - 1]++;\n'),
+     lambda m: m.group(0) + '#ifdef __vita__ // vita-exprcount\n\t\t\tif (VitaProbes::vmLaps == 1 && pass == 0)\n\t\t\t\tVitaProbes::exprCounts[(int)expr->Type & 127]++;\n#endif\n',
+     'vita-exprcount')
+# 170. #130's frameless path for every native with a native index, not only operators (VSize, Normal, Rand, IsInState,
+#      PlaySound, SetLocation, ... ~800 native calls a frame in Lev2_Fire1): CallNative built a whole Frame (locals on the VM
+#      variable stack, the call stack entry) only to hand the arguments over. Latent and iterator natives keep the old way.
+#      A non-operator still checks IsEventEnabled first, as Frame::Call did. The call stack entry was only read by the logger
+#      (which skips a native's frame anyway), the debugger and exception texts.
+edit("VM/Frame.cpp",
+     re.escape('\t\tfunc->VitaFastOp = (AllFlags(func->FuncFlags, FunctionFlags::Native) && AllFlags(func->FuncFlags, FunctionFlags::Operator) &&\n\t\t\tfunc->NativeFuncIndex != 0 && func->Properties.size() <= 8) ? 1 : 0;\n\tif (func->VitaFastOp == 1)\n\t{\n'),
+     lambda m: ('\t\tfunc->VitaFastOp = (AllFlags(func->FuncFlags, FunctionFlags::Native) && func->NativeFuncIndex != 0 && func->Properties.size() <= 8 &&\n'
+                '\t\t\t!AllFlags(func->FuncFlags, FunctionFlags::Latent) && !AllFlags(func->FuncFlags, FunctionFlags::Iterator)) ? // vita-fastnative\n'
+                '\t\t\t(AllFlags(func->FuncFlags, FunctionFlags::Operator) ? 1 : (VitaFastNatives() ? 2 : 0)) : 0;\n'
+                '\tif (func->VitaFastOp == 2 && !instance->IsEventEnabled(func->Name))\n\t\treturn ExpressionValue::NothingValue();\n'
+                '\tif (func->VitaFastOp >= 1)\n\t{\n'),
+     'vita-fastnative')
+edit("VM/Frame.cpp",
+     re.escape('ExpressionValue Frame::Call(UFunction* func, UObject* instance, const ArrayView<ExpressionValue>& args)\n{\n'),
+     lambda m: '#ifdef __vita__ // vita-fastnative-cfg: render.cfg fast_natives (read once)\nstatic bool VitaFastNatives() { static const bool on = VitaConfigInt("fast_natives", 1) != 0; return on; }\n#endif\n' + m.group(0),
+     'vita-fastnative-cfg')
+# 171. A script/native call's result was copied onto the VM stack (PushValue(callresult): a copy of a vector, string, struct)
+#      though the local is not used again: moved.
+edit("VM/Frame.cpp",
+     re.escape('PushValue(callresult);'),
+     lambda m: 'PushValue(std::move(callresult)); // vita-movecall',
+     'vita-movecall')
+# 172. The face loop of a mesh goes on three cores from face_threads_min faces (render.cfg, was a fixed 192): Lev2_Inc_A's
+#      greenhouse draws ~19 meshes a frame of which 16 were smaller and done on one core ('mesh: faces' 270 us a mesh).
+edit("../../knowwonder/Anim/KWSkeletal.cpp",
+     re.escape('mesh->Faces.size() >= 192) // vita-faces-fog\n'),
+     lambda m: 'mesh->Faces.size() >= VitaFaceThreadsMin()) // vita-faces-fog vita-facesmin\n',
+     'vita-facesmin')
+# 173. Probes in the three-core face loop of DrawSkeletalMesh: the material pass and the parts' run ('mesh: faces' stayed
+#      ~270 us a mesh in Lev2_Inc_A with 3 or 11 meshes a frame on three cores).
+edit("../../knowwonder/Anim/KWSkeletal.cpp",
+     re.escape('\t\t\t// (1) the materials, where the loop below would meet them first\n\t\t\tfor (const MeshFace& face : mesh->Faces)\n'),
+     lambda m: '\t\t\tstd::optional<VitaProbes::Scope> vitaMatProbe; // vita-meshmatprobe\n\t\t\tvitaMatProbe.emplace(VitaProbes::MeshMats);\n' + m.group(0),
+     'vita-meshmatprobe')
+edit("../../knowwonder/Anim/KWSkeletal.cpp",
+     re.escape('\t\t\t// (2) the faces in three parts\n'),
+     lambda m: '\t\t\tvitaMatProbe.reset(); // vita-meshmatprobe-end\n' + m.group(0),
+     'vita-meshmatprobe-end')
+edit("../../knowwonder/Anim/KWSkeletal.cpp",
+     re.escape('\t\t\tVitaJobs::Run([](void* c, int i) { (*((VitaFaceCtx*)c)->fn)(i); }, &vitaCtx, Parts);\n'),
+     lambda m: '\t\t\t{ VITA_PROBE(MeshFacesRun); VitaJobs::Run([](void* c, int i) { (*((VitaFaceCtx*)c)->fn)(i); }, &vitaCtx, Parts); } // vita-meshrunprobe\n',
+     'vita-meshrunprobe')
+# 174. The mesh prepass also makes the main view's opaque faces of the meshes it skins (VitaMeshFaces.h, VitaMeshPrepass.inc
+#      VitaMeshJobFaces): DrawSkeletalMesh's face loop moved to the workers, beside the level surfaces' drawing; DrawSkeletalMesh
+#      hands the runs over. Lev2_Inc_A: 'mesh: faces' ~270 us x 19 meshes on the main thread. render.cfg prepass_faces=0: off.
+edit("Render/VisibleMesh.h",
+     re.escape('\tbool DrawMesh(VisibleFrame* frame, UActor* actor, bool wireframe, bool translucentPass);\n'),
+     lambda m: m.group(0) + '#ifdef __vita__ // vita-meshtex-public: the mesh prepass picks an actor\'s textures as DrawSkeletalMesh will\n\tstatic void VitaSetupLodMeshTextures(UActor* actor, ULodMesh* mesh) { VisibleMesh vm; vm.SetupLodMeshTextures(actor, mesh); }\n#endif\n',
+     'vita-meshtex-public')
+edit("../../knowwonder/Anim/KWSkeletal.cpp",
+     re.escape('#ifdef __vita__\n#include "VitaMeshLod.inc" // vita-lodinc\n#endif\n'),
+     lambda m: m.group(0) + '#ifdef __vita__\n#include "VitaMeshFaces.h" // vita-meshfaces-inc\n#endif\n',
+     'vita-meshfaces-inc')
+edit("../../knowwonder/Anim/KWSkeletal.cpp",
+     re.escape('\t\tconst int lod = VitaLodRequest(frame, actor, mesh); // vita-lodcalc\n'),
+     lambda m: m.group(0) + ('\t\tif (!translucentPass && lightLocationActor == actor && VitaFacesOn()) // vita-meshfaces-use\n\t\t{\n'
+                             '\t\t\tbool vitaNeedTranslucent = false;\n'
+                             '\t\t\tif (VitaDrawPreparedFaces(frame, actor, mesh, lod, vitaNeedTranslucent))\n\t\t\t\treturn vitaNeedTranslucent;\n\t\t}\n'),
+     'vita-meshfaces-use')
+edit("../../knowwonder/Anim/KWSkeletal.cpp",
+     re.escape('#include "Render/VisibleFrame.h"\n'),
+     lambda m: m.group(0) + '#include "Render/VisibleMesh.h" // vita-meshfaces-meshinc\n',
+     'vita-meshfaces-meshinc')
+# 175. '@bench <actor or class> <function> <n>': the function called n times on the actor (each parameter its default value),
+#      the log gets the microseconds a call ('HP1 bench'). For measuring the interpreter on the console. Calling a function
+#      runs its code: use it on functions without lasting effects (CheckForHarryHit only damages Harry when he is in reach).
+edit("../../knowwonder/KWDebug.cpp",
+     re.escape('\t\tif (text.rfind("@script ", 0) == 0) // vita-script-cmd\n'),
+     lambda m: ('\t\tif (text.rfind("@bench ", 0) == 0) // vita-bench-cmd\n\t\t{\n'
+                '\t\t\tstd::istringstream in(text.substr(7));\n'
+                '\t\t\tstd::string actorName, funcName;\n\t\t\tint count = 1000;\n'
+                '\t\t\tin >> actorName >> funcName >> count;\n'
+                '\t\t\tUActor* actor = nullptr;\n'
+                '\t\t\tfor (UActor* a : engine->Level->Actors)\n'
+                '\t\t\t\tif (a && (a->Name.ToString() == actorName || a->Class->Name.ToString() == actorName))\n\t\t\t\t{\n\t\t\t\t\tactor = a;\n\t\t\t\t\tbreak;\n\t\t\t\t}\n'
+                '\t\t\tUFunction* func = actor ? FindEventFunction(actor, NameString(funcName)) : nullptr;\n'
+                '\t\t\tif (!func)\n\t\t\t{\n\t\t\t\tLogMessage("HP1 bench: no actor or function " + actorName + " " + funcName);\n\t\t\t\treturn;\n\t\t\t}\n'
+                '\t\t\tstd::vector<ExpressionValue> args;\n'
+                '\t\t\tfor (UProperty* prop : func->Properties)\n'
+                '\t\t\t\tif (AllFlags(prop->PropFlags, PropertyFlags::Parm) && !AllFlags(prop->PropFlags, PropertyFlags::ReturnParm))\n'
+                '\t\t\t\t\targs.push_back(ExpressionValue::DefaultValue(prop));\n'
+                '\t\t\tconst bool vitaWasEnabled = VitaProbes::enabled; // vm_laps=1: the call split into setup / run / finish\n'
+                '\t\t\tVitaProbes::enabled = true;\n'
+                '\t\t\tfor (VitaProbes::Id id : { VitaProbes::VmSetup, VitaProbes::VmRun, VitaProbes::VmFinish }) { VitaProbes::us[id] = 0; VitaProbes::calls[id] = 0; }\n'
+                '\t\t\tconst auto start = std::chrono::steady_clock::now();\n'
+                '\t\t\tfor (int i = 0; i < count; i++)\n'
+                '\t\t\t\tFrame::Call(func, actor, ArrayView<ExpressionValue>(args.data(), args.size()));\n'
+                '\t\t\tconst double us = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - start).count() / std::max(count, 1);\n'
+                '\t\t\tVitaProbes::enabled = vitaWasEnabled;\n'
+                '\t\t\tauto vitaPer = [&](VitaProbes::Id id) { return std::to_string(VitaProbes::calls[id] ? VitaProbes::us[id] / VitaProbes::calls[id] : 0.0); };\n'
+                '\t\t\tLogMessage("HP1 bench " + actor->Name.ToString() + "." + funcName + ": " + std::to_string(us) + " us a call (" + std::to_string(count) + " calls); laps (vm_laps=1) setup " + vitaPer(VitaProbes::VmSetup) + ", run " + vitaPer(VitaProbes::VmRun) + ", finish " + vitaPer(VitaProbes::VmFinish));\n'
+                '\t\t\treturn;\n\t\t}\n' + m.group(0)),
+     'vita-bench-cmd')
+# 176. Frame::Call asked IsEventEnabled(func->Name) on every call: a hash lookup of the name among the engine's events first.
+#      Whether a function's name is an event is kept in the UFunction (VitaEvent: -2 unknown, -1 none, else the EventName);
+#      a non-event name only needs the object's disabled-event table when it has one (what IsEventEnabled(name) does).
+edit("Packages/Core/UStruct.h",
+     re.escape("\tint8_t VitaEmptyFunc = -1; // vita-emptyfunc-field"),
+     lambda m: "\tint16_t VitaEvent = -2; // vita-eventfield: the EventName of this function's name (-1: none, -2: unknown)\n" + m.group(0),
+     'vita-eventfield')
+edit("VM/Frame.cpp",
+     re.escape('\tif (!instance->IsEventEnabled(func->Name))\n\t{\n\t\treturn ExpressionValue::NothingValue();\n\t}\n'),
+     lambda m: ('#ifdef __vita__ // vita-eventcache\n'
+                '\tif (func->VitaEvent == -2)\n\t{\n'
+                '\t\tEventName vitaEv = {};\n'
+                '\t\tfunc->VitaEvent = NameStringToEventName(func->Name, vitaEv) ? (int16_t)vitaEv : (int16_t)-1;\n\t}\n'
+                '\tif (func->VitaEvent >= 0 ? !instance->IsEventEnabled((EventName)func->VitaEvent) :\n'
+                '\t\t(!instance->DisabledEvents.empty() && !instance->IsEventEnabled(func->Name)))\n'
+                '\t{\n\t\treturn ExpressionValue::NothingValue();\n\t}\n'
+                '#else\n' + m.group(0) + '#endif\n'),
+     'vita-eventcache')
+edit("VM/Frame.cpp",
+     re.escape('#include "Precomp.h"\n'),
+     lambda m: m.group(0) + '#include "VM/ScriptCall.h" // vita-eventcache-inc\n',
+     'vita-eventcache-inc')
+edit("../../knowwonder/KWDebug.cpp",
+     re.escape('#include "Precomp.h"\n'),
+     lambda m: m.group(0) + '#include "VitaProbes.h" // vita-bench-inc\n',
+     'vita-bench-inc')
+# 177. KW::SetupMeshLighting tested every light of the level per mesh (Lev3_Intro's Great Hall: ~140 us a mesh, 2.3 ms a frame):
+#      VitaLightGrid.h gives the lights whose sphere touches the point's grid cell (plus the ones that moved), in the snapshot's
+#      order; the same exact test then picks the same lights in the same order.
+edit("../../knowwonder/KWMeshLight.cpp",
+     re.escape('\t\t\tstd::vector<uint8_t> LightSpecialLit;\n'),
+     lambda m: m.group(0) + '\t\t\tVitaLightGrid Grid; // vita-lightgrid-member\n',
+     'vita-lightgrid-member')
+edit("../../knowwonder/KWMeshLight.cpp",
+     re.escape('#include "VitaConfig.h" // vita-inc-maxlights\n'),
+     lambda m: m.group(0) + '#ifdef __vita__ // vita-lightgrid-inc\n#include "VitaLightGrid.h"\n#endif\n',
+     'vita-lightgrid-inc')
+edit("../../knowwonder/KWMeshLight.cpp",
+     re.escape('\t\t\t\ts.LightSpecialLit[i] = s.Lights[i]->bSpecialLit() ? 1 : 0;\n\t\t\t}\n'),
+     lambda m: m.group(0) + '\t\t\ts.Grid.Update(s.Lights, s.LightLocations, s.LightRadii); // vita-lightgrid-update\n',
+     'vita-lightgrid-update')
+edit("../../knowwonder/KWMeshLight.cpp",
+     re.escape('\t\tfor (size_t li = 0; li < s.Lights.size(); li++)\n\t\t{\n\t\t\tUActor* light = s.Lights[li];\n'),
+     lambda m: '\t\tfor (uint32_t li : s.Grid.Query(location)) // vita-lightgrid-query\n\t\t{\n\t\t\tUActor* light = s.Lights[li];\n',
+     'vita-lightgrid-query')
+# 178. KW's mesh light snapshot (KWMeshLight.cpp BeginFrame, once a frame) scanned every actor of the level for lights: the
+#      same list (LightType != None and LightBrightness != 0, in the level's order) LightSystem::BeginFrame has just made for
+#      this frame. Taken from there when LightSystem's frame counter moved since the last snapshot (else the scan as before).
+edit("Light/LightSystem.h",
+     re.escape('\tvoid InitVertexLight(VertexLight& vertexlight, UActor* actor, UZoneInfo* zoneActor, const vec4& boundingSphere);\n'),
+     lambda m: m.group(0) + ('#ifdef __vita__ // vita-framelights: this frame\'s lights (BeginFrame) for KW\'s mesh light snapshot\n'
+                             '\tconst std::vector<UActor*>& VitaFrameLights() const { return LightTree.Lights; }\n'
+                             '\tint VitaFrameCounter() const { return FrameCounter; }\n#endif\n'),
+     'vita-framelights')
+edit("../../knowwonder/KWMeshLight.cpp",
+     re.escape('\t\t\ts.Lights.clear();\n\t\t\tfor (UActor* light : s.Level->Actors)\n\t\t\t{\n\t\t\t\tif (light && light->LightType() != LT_None && light->LightBrightness() != 0)\n\t\t\t\t\ts.Lights.push_back(light);\n\t\t\t}\n'),
+     lambda m: ('#ifdef __vita__ // vita-framelights-use\n'
+                '\t\t\tstatic int vitaLightFrame = -1;\n'
+                '\t\t\tif (s.Level->Light.VitaFrameCounter() != vitaLightFrame)\n\t\t\t{\n'
+                '\t\t\t\tvitaLightFrame = s.Level->Light.VitaFrameCounter();\n'
+                '\t\t\t\ts.Lights = s.Level->Light.VitaFrameLights();\n\t\t\t}\n\t\t\telse\n\t\t\t{\n'
+                + m.group(0).replace('\t\t\t', '\t\t\t\t') +
+                '\t\t\t}\n#else\n' + m.group(0) + '#endif\n'),
+     'vita-framelights-use')
+# 179. probe 'check: brush primitives': the line checks against a mover's BSP among the actor primitives
+edit("../../knowwonder/KWLevelCheck.cpp",
+     re.escape('\t\tcase PrimitiveKind::Brush: return ModelLineCheck(hit, ModelFrame::Brush(actor), end, start, extent, extraNodeFlags);\n'),
+     lambda m: '\t\tcase PrimitiveKind::Brush: { VITA_PROBE(CheckPrimBrush); return ModelLineCheck(hit, ModelFrame::Brush(actor), end, start, extent, extraNodeFlags); } // vita-brushprobe\n',
+     'vita-brushprobe')
+# 180. The collision hash's cells were std::list (a heap node per actor per cell: every move of an actor freed and allocated
+#      them again, and a query chased the nodes): std::vector, the same actors in the same order (push_back; removal keeps the
+#      order of the others). An emptied cell is kept (was erased: its next actor allocated the map node again).
+edit("Collision/TopLevel/CollisionSystem.h",
+     re.escape('\tstd::unordered_map<uint32_t, std::list<UActor*>> CollisionActors;\n'),
+     lambda m: '#ifdef __vita__ // vita-hashvec\n\tstd::unordered_map<uint32_t, std::vector<UActor*>> CollisionActors;\n#else\n' + m.group(0) + '#endif\n',
+     'vita-hashvec')
+edit("Collision/TopLevel/CollisionTest.h",
+     re.escape('\tconst std::list<UActor*>& GetActors(int x, int y, int z) const\n'),
+     lambda m: '#ifdef __vita__ // vita-hashvec-get\n\tconst std::vector<UActor*>& GetActors(int x, int y, int z) const\n#else\n' + m.group(0) + '#endif\n',
+     'vita-hashvec-get')
+edit("Collision/TopLevel/CollisionTest.h",
+     re.escape('\tinline static std::list<UActor*> emptyList;\n'),
+     lambda m: '#ifdef __vita__ // vita-hashvec-empty\n\tinline static std::vector<UActor*> emptyList;\n#else\n' + m.group(0) + '#endif\n',
+     'vita-hashvec-empty')
+edit("Collision/TopLevel/CollisionSystem.cpp",
+     re.escape('\t\t\t\t\t\tit->second.remove(actor);\n\t\t\t\t\t\tif (it->second.empty())\n\t\t\t\t\t\t\tCollisionActors.erase(it);\n'),
+     lambda m: ('#ifdef __vita__ // vita-hashvec-remove\n'
+                '\t\t\t\t\t\tit->second.erase(std::remove(it->second.begin(), it->second.end(), actor), it->second.end());\n'
+                '#else\n' + m.group(0) + '#endif\n'),
+     'vita-hashvec-remove')
+# 181. The decal trace (VitaTraceFirst, #156) walked every polygon of a node's coplanar chain (Lev3_Intro: 15 nodes but 173
+#      polygons a trace, ~110 us: the hall floor's long chain; the plane test of each scattered BspNode, then the triangle test).
+#      Now each chain is kept once as a contiguous list (member, a copy of its plane, its box): a member whose plane the ray does
+#      not cross is skipped (NodeRayIntersect's own test, same numbers), and one whose box the ray's point on the plane is outside of, by
+#      more than a margin that grows as the ray grazes the plane, is skipped (the triangle test's hit lies in the polygon).
+#      The rest go to NodeRayIntersect in the same order. trace_check=1 compares every trace with the full walk.
+edit("Collision/BottomLevel/TraceRayModel.cpp",
+     re.escape('\tBspNode* polynode = node;\n\twhile (true)\n\t{\n\t\tif (!visibilityOnly || (polynode->NodeFlags & NF_NotVisBlocking) == 0)\n\t\t{\n\t\t\tdouble t = NodeRayIntersect(origin, tmin, dirNormalized, best, polynode);\n\t\t\tif (t >= tmin && t < best)\n\t\t\t{\n\t\t\t\tbest = t;\n\t\t\t\tfound = true;\n\t\t\t\thit = { (float)t, vec3(node->PlaneX, node->PlaneY, node->PlaneZ), Owner, polynode, node };\n\t\t\t\tif (dot(to_dvec3(hit.Normal), dirNormalized) > 0.0)\n\t\t\t\t\thit.Normal = -hit.Normal;\n\t\t\t}\n\t\t}\n\t\tif (polynode->Plane < 0) break;\n\t\tpolynode = &Model->Nodes[polynode->Plane];\n\t}\n'),
+     lambda m: ('\t// vita-polychain (#181)\n'
+                '\tconst VitaChain& chain = VitaChainOf(node);\n'
+                '\tdvec3 endPoint = origin + dirNormalized * best;\n'
+                '\t// a hit lies on the segment and in its polygon: the segment\'s box (one unit wider) must touch the polygon\'s box\n'
+                '\tfloat segBox[6];\n'
+                '\tauto setSegBox = [&]()\n\t{\n'
+                '\t\tfor (int c = 0; c < 3; c++)\n\t\t{\n'
+                '\t\t\tsegBox[c] = (float)std::min(origin[c], endPoint[c]) - 1.0f;\n'
+                '\t\t\tsegBox[c + 3] = (float)std::max(origin[c], endPoint[c]) + 1.0f;\n\t\t}\n\t};\n'
+                '\tauto boxMissed = [&](const float* b)\n\t{\n'
+                '\t\treturn segBox[0] > b[3] || segBox[1] > b[4] || segBox[2] > b[5] || segBox[3] < b[0] || segBox[4] < b[1] || segBox[5] < b[2];\n\t};\n'
+                '\tsetSegBox();\n'
+                '\tif (!boxMissed(chain.box))\n'
+                '\tfor (uint32_t ci = chain.first; ci < chain.first + chain.count; ci++)\n\t{\n'
+                '\t\tconst VitaChainMember& member = VitaMembers[ci];\n'
+                '\t\tif (boxMissed(member.box))\n\t\t\tcontinue;\n'
+                '\t\t// NodeRayIntersect\'s own plane test, from the copy of the plane: not crossed, it returns best\n'
+                '\t\tconst dvec4 plane = { member.plane[0], member.plane[1], member.plane[2], -member.plane[3] };\n'
+                '\t\tconst double fromSide = dot(dvec4(origin, 1.0), plane);\n'
+                '\t\tconst double toSide = dot(dvec4(endPoint, 1.0), plane);\n'
+                '\t\tif ((fromSide > 0.0 && toSide > 0.0) || (fromSide < 0.0 && toSide < 0.0))\n\t\t\tcontinue;\n'
+                '\t\tconst double cosine = std::abs(dot(dvec3(plane.x, plane.y, plane.z), dirNormalized));\n'
+                '\t\tif (cosine >= 0.05 && fromSide != toSide)\n\t\t{\n'
+                '\t\t\tconst double margin = 1.0 + 1.0 / cosine;\n'
+                '\t\t\tconst dvec3 p = origin + dirNormalized * (best * fromSide / (fromSide - toSide));\n'
+                '\t\t\tif (p.x < member.box[0] - margin || p.y < member.box[1] - margin || p.z < member.box[2] - margin ||\n'
+                '\t\t\t\tp.x > member.box[3] + margin || p.y > member.box[4] + margin || p.z > member.box[5] + margin)\n'
+                '\t\t\t\tcontinue;\n\t\t}\n'
+                '\t\tBspNode* polynode = &Model->Nodes[member.node];\n'
+                '\t\tif (!visibilityOnly || (polynode->NodeFlags & NF_NotVisBlocking) == 0)\n\t\t{\n'
+                '\t\t\tdouble t = NodeRayIntersect(origin, tmin, dirNormalized, best, polynode);\n'
+                '\t\t\tif (t >= tmin && t < best)\n\t\t\t{\n'
+                '\t\t\t\tbest = t;\n\t\t\t\tfound = true;\n'
+                '\t\t\t\thit = { (float)t, vec3(node->PlaneX, node->PlaneY, node->PlaneZ), Owner, polynode, node };\n'
+                '\t\t\t\tif (dot(to_dvec3(hit.Normal), dirNormalized) > 0.0)\n\t\t\t\t\thit.Normal = -hit.Normal;\n'
+                '\t\t\t\tendPoint = origin + dirNormalized * best;\n\t\t\t\tsetSegBox();\n'
+                '\t\t\t}\n\t\t}\n\t}\n'),
+     'vita-polychain')
+edit("Collision/BottomLevel/TraceRayModel.cpp",
+     re.escape('void TraceRayModel::VitaTraceFirst(const dvec3& origin, double tmin, const dvec3& dirNormalized, double& best, bool visibilityOnly, BspNode* node, CollisionHit& hit, bool& found)\n'),
+     lambda m: ('// vita-polychain-fn: a node\'s coplanar chain as a contiguous list, made the first time it is walked (#181)\n'
+                'const TraceRayModel::VitaChain& TraceRayModel::VitaChainOf(BspNode* node)\n{\n'
+                '\tif (VitaChainModel != Model || VitaChains.size() != Model->Nodes.size())\n\t{\n'
+                '\t\tVitaChainModel = Model;\n\t\tVitaChains.assign(Model->Nodes.size(), VitaChain());\n\t\tVitaMembers.clear();\n\t}\n'
+                '\tVitaChain& chain = VitaChains[node - Model->Nodes.data()];\n'
+                '\tif (chain.count != 0)\n\t\treturn chain;\n'
+                '\tchain.first = (uint32_t)VitaMembers.size();\n'
+                '\tfor (BspNode* p = node; ; p = &Model->Nodes[p->Plane])\n\t{\n'
+                '\t\tVitaChainMember m;\n\t\tm.node = (uint32_t)(p - Model->Nodes.data());\n'
+                '\t\tm.box[0] = m.box[1] = m.box[2] = FLT_MAX;\n\t\tm.box[3] = m.box[4] = m.box[5] = -FLT_MAX;\n'
+                '\t\tfor (int k = 0; k < p->NumVertices; k++)\n\t\t{\n'
+                '\t\t\tconst vec3& v = Model->Points[Model->Vertices[p->VertPool + k].Vertex];\n'
+                '\t\t\tfor (int c = 0; c < 3; c++)\n\t\t\t{\n\t\t\t\tm.box[c] = std::min(m.box[c], v[c]);\n\t\t\t\tm.box[c + 3] = std::max(m.box[c + 3], v[c]);\n\t\t\t}\n\t\t}\n'
+                '\t\tm.plane[0] = p->PlaneX;\n\t\tm.plane[1] = p->PlaneY;\n\t\tm.plane[2] = p->PlaneZ;\n\t\tm.plane[3] = p->PlaneW;\n'
+                '\t\tVitaMembers.push_back(m);\n'
+                '\t\tif (p->Plane < 0)\n\t\t\tbreak;\n\t}\n'
+                '\tchain.count = (uint32_t)VitaMembers.size() - chain.first;\n'
+                '\tchain.box[0] = chain.box[1] = chain.box[2] = FLT_MAX;\n\tchain.box[3] = chain.box[4] = chain.box[5] = -FLT_MAX;\n'
+                '\tfor (uint32_t i = chain.first; i < chain.first + chain.count; i++)\n'
+                '\t\tfor (int c = 0; c < 3; c++)\n\t\t{\n\t\t\tchain.box[c] = std::min(chain.box[c], VitaMembers[i].box[c]);\n\t\t\tchain.box[c + 3] = std::max(chain.box[c + 3], VitaMembers[i].box[c + 3]);\n\t\t}\n'
+                '\treturn chain;\n}\n\n'
+                + m.group(0)),
+     'vita-polychain-fn')
+edit("Collision/BottomLevel/TraceRayModel.h",
+     re.escape('\tvoid VitaTraceFirst(const dvec3& origin, double tmin, const dvec3& dirNormalized, double& best, bool visibilityOnly, BspNode* node, CollisionHit& hit, bool& found);\n'),
+     lambda m: m.group(0) + ('\tstruct VitaChainMember { uint32_t node; float plane[4]; float box[6]; }; // vita-polychain-h\n'
+                             '\tstruct VitaChain { uint32_t first = 0, count = 0; float box[6]; };\n'
+                             '\tinline static UModel* VitaChainModel = nullptr;\n'
+                             '\tinline static std::vector<VitaChain> VitaChains;\n'
+                             '\tinline static std::vector<VitaChainMember> VitaMembers;\n'
+                             '\tconst VitaChain& VitaChainOf(BspNode* node);\n'),
+     'vita-polychain-h')
+# 182. VisibleMesh::Draw made the actor's light list (UpdateLightList: a ray from every light in range, each time the actor
+#      moved 6 units) for every mesh actor. KW's skeletal meshes light themselves from KW's own snapshot (KWMeshLight.cpp) and
+#      never read it: Lev3_Intro's walking students cost 136 us each, 2.5 ms a frame (the candles). The list is still made for
+#      a pawn with a weapon (the engine draws a non-skeletal weapon with its pawn's lights) and for every other mesh kind.
+edit("Render/VisibleMesh.cpp",
+     re.escape('\t{ VITA_PROBE(MeshLightList); engine->Level->Light.UpdateLightList(actor); } // vita-probe-lightlist\n'),
+     lambda m: ('#ifdef __vita__ // vita-kwlightlist\n'
+                '\tif (!(engine->LaunchInfo.IsKnowWonder() && UObject::TryCast<USkeletalMesh>(mesh) && !(UObject::TryCast<UPawn>(actor) && static_cast<UPawn*>(actor)->Weapon())))\n'
+                '#endif\n' + m.group(0)),
+     'vita-kwlightlist')
+# 183. probes 'mod: ...': each mod in HP1::TickMods
+edit("../../hp1/mods/HP1Mods.cpp",
+     re.escape('\t\tMods::TickLoadingScreenHold();\n\t\tMods::TickLaunchSkips();\n\t\tLevelStartTick();\n\t\tMods::TickStorybookSkip();\n\t\tMods::TickDiscordPresence(realElapsed);\n\t\tMods::TickPathFixes();\n#ifdef __vita__ // vita-spelllesson\n\t\tVitaTickSpellLesson();\n#endif\n\t\tMods::TickImprovedMovement();\n\t\tMods::TickFreeCamera();\n\t\tMods::TickFrameLimit();\n'),
+     lambda m: ('\t\tVITA_LAP_START; // vita-modlaps\n'
+                '\t\tMods::TickLoadingScreenHold();\n\t\tVITA_LAP(ModA);\n\t\tMods::TickLaunchSkips();\n\t\tVITA_LAP(ModB);\n\t\tLevelStartTick();\n\t\tVITA_LAP(ModC);\n'
+                '\t\tMods::TickStorybookSkip();\n\t\tVITA_LAP(ModD);\n\t\tMods::TickDiscordPresence(realElapsed);\n\t\tVITA_LAP(ModE);\n\t\tMods::TickPathFixes();\n\t\tVITA_LAP(ModF);\n'
+                '#ifdef __vita__ // vita-spelllesson\n\t\tVitaTickSpellLesson();\n#endif\n\t\tVITA_LAP(ModG);\n'
+                '\t\tMods::TickImprovedMovement();\n\t\tVITA_LAP(ModH);\n\t\tMods::TickFreeCamera();\n\t\tVITA_LAP(ModI);\n\t\tMods::TickFrameLimit();\n\t\tVITA_LAP(ModJ);\n'),
+     'vita-modlaps')
+edit("../../hp1/mods/HP1Mods.cpp",
+     re.escape('#include "Precomp.h"\n'),
+     lambda m: m.group(0) + '#include "VitaProbes.h" // vita-modlaps-inc\n',
+     'vita-modlaps-inc')
+# 184. The frame-limit mod (60 fps, for HP1's movement bugs above ~110 fps) on the Vita: vsync paces the game and it never comes
+#      near those rates, but the limit's waits cost the engine thread: Lev3_Intro turning 37.8 -> 34.6 ms with
+#      --no-mod=frame-limit ('mod: frame limit' 1.1 ms a frame standing). Off on the Vita while vsync is on (render.cfg vsync=1:
+#      the GL thread presents at most 60 a second, and the engine waits for it); with vsync=0 the limit stays.
+edit("../../hp1/mods/FrameLimit.cpp",
+     re.escape('\tvoid TickFrameLimit()\n\t{\n\t\tint fps = FrameLimit();\n'),
+     lambda m: m.group(0).replace('\t\tint fps = FrameLimit();\n', '#ifdef __vita__ // vita-nofps2: with vsync (render.cfg vsync=1) the frame rate stays under 60\n\t\tstatic const bool vitaVsync = VitaConfigInt("vsync", 1) != 0;\n\t\tif (vitaVsync)\n\t\t\treturn;\n#endif\n\t\tint fps = FrameLimit();\n'),
+     'vita-nofps2')
+edit("../../hp1/mods/FrameLimit.cpp",
+     re.escape('#include "HP1Mods.h"\n'),
+     lambda m: m.group(0) + '#include "VitaConfig.h" // vita-nofps-inc\n',
+     'vita-nofps-inc')
+# 188. counts (probes): why DrawSkeletalMesh makes its faces itself
+edit("../../knowwonder/Anim/KWSkeletal.cpp",
+     re.escape('\t\t\tif (VitaDrawPreparedFaces(frame, actor, mesh, lod, vitaNeedTranslucent))\n\t\t\t\treturn vitaNeedTranslucent;\n\t\t}\n'),
+     lambda m: m.group(0) + ('\t\tif (VitaProbes::enabled) // vita-oldfaces-count\n'
+                             '\t\t\tVitaProbes::calls[translucentPass ? VitaProbes::OldFacesTransl : lightLocationActor != actor ? VitaProbes::OldFacesWeapon : VitaProbes::OldFacesNoJob]++;\n'),
+     'vita-oldfaces-count')
+# 191. MultiLineCheck's world part (ModelLineCheck against the level's BSP: static, the answer depends only on the line, the
+#      extent and the node flags) kept in a small table by exactly those values: the walking physics of actors that stand
+#      asks the same lines frame after frame (Lev3_Intro: ~100 world checks a frame at ~14 us). Emptied when the level is let go
+#      (epoch) or another model comes. world_cache=0: off.
+edit("../../knowwonder/KWLevelCheck.cpp",
+     re.escape('\t\t\t{ VITA_PROBE(CheckWorld); vitaWorldHit = !ModelLineCheck(world, ModelFrame::Level(engine->Level->Model), end, start, extent, extraNodeFlags); } // vita-checkprobe-world\n'),
+     lambda m: ('\t\t\t{ VITA_PROBE(CheckWorld); vitaWorldHit = !VitaWorldLineCheck(world, end, start, extent, extraNodeFlags); } // vita-checkprobe-world vita-worldcache-use\n'),
+     'vita-worldcache-use')
+edit("../../knowwonder/KWLevelCheck.cpp",
+     re.escape('\t// IDA Engine.dll: ?MultiLineCheck@ULevel@@'),
+     lambda m: ('#ifdef __vita__ // vita-wlcache-fn2\n'
+                '\tstatic bool VitaWorldLineCheck(CheckResult& world, const vec3& end, const vec3& start, const vec3& extent, uint8_t extraNodeFlags)\n\t{\n'
+                '\t\tstatic const bool on = VitaConfigInt("world_cache", 1) != 0;\n'
+                '\t\tUModel* model = engine->Level->Model;\n'
+                '\t\tif (!on)\n\t\t\treturn ModelLineCheck(world, ModelFrame::Level(model), end, start, extent, extraNodeFlags);\n'
+                '\t\tstruct Entry { float key[9]; uint8_t flags; bool used; bool clear; CheckResult result; };\n'
+                '\t\tstatic Entry table[1024];\n\t\tstatic UModel* tableModel = nullptr;\n\t\tstatic int tableEpoch = -1;\n'
+                '\t\tstatic unsigned asked = 0, found = 0;\n'
+                '\t\tif (tableModel != model || tableEpoch != vitaLevelEpoch)\n\t\t{\n'
+                '\t\t\tfor (Entry& e : table)\n\t\t\t\te.used = false;\n\t\t\ttableModel = model;\n\t\t\ttableEpoch = vitaLevelEpoch;\n\t\t}\n'
+                '\t\tconst float key[9] = { end.x, end.y, end.z, start.x, start.y, start.z, extent.x, extent.y, extent.z };\n'
+                '\t\tuint32_t hash = 2166136261u ^ extraNodeFlags;\n'
+                '\t\tfor (float v : key)\n\t\t{\n\t\t\tuint32_t bits;\n\t\t\tmemcpy(&bits, &v, 4);\n\t\t\thash = (hash ^ bits) * 16777619u;\n\t\t}\n'
+                '\t\tEntry& e = table[(hash ^ (hash >> 15)) & 1023u];\n'
+                '\t\tasked++;\n'
+                '\t\tif ((asked & 4095u) == 0)\n\t\t\tLogMessage("VitaWorldCache: " + std::to_string(found) + " of " + std::to_string(asked) + " level line checks from the table");\n'
+                '\t\tstatic const bool check = VitaConfigInt("world_cache_check", 0) != 0;   // the check made again and compared\n'
+                '\t\tif (e.used && e.flags == extraNodeFlags && memcmp(e.key, key, sizeof(key)) == 0)\n\t\t{\n'
+                '\t\t\tfound++;\n'
+                '\t\t\tif (check)\n\t\t\t{\n'
+                '\t\t\t\tstatic unsigned wrong = 0;\n\t\t\t\tCheckResult again = world;\n'
+                '\t\t\t\tconst bool clearAgain = ModelLineCheck(again, ModelFrame::Level(model), end, start, extent, extraNodeFlags);\n'
+                '\t\t\t\tif (clearAgain != e.clear || memcmp(&again, &e.result, sizeof(CheckResult)) != 0)\n'
+                '\t\t\t\t\tLogMessage("VitaWorldCache: DIFFERS (" + std::to_string(++wrong) + ")");\n\t\t\t}\n'
+                '\t\t\tworld = e.result;\n\t\t\treturn e.clear;\n\t\t}\n'
+                '\t\tconst CheckResult before = world;\n'
+                '\t\tconst bool clear = ModelLineCheck(world, ModelFrame::Level(model), end, start, extent, extraNodeFlags);\n'
+                '\t\tif (before.Time == 1.0f && before.Actor == nullptr && before.Model == nullptr && before.Item == -1)\n\t\t{\n'
+                '\t\t\tmemcpy(e.key, key, sizeof(key));\n\t\t\te.flags = extraNodeFlags;\n\t\t\te.used = true;\n\t\t\te.clear = clear;\n\t\t\te.result = world;\n\t\t}\n'
+                '\t\treturn clear;\n\t}\n#endif\n\n' + m.group(0)),
+     'vita-wlcache-fn2')
+edit("../../knowwonder/KWLevelCheck.cpp",
+     re.escape('#include "VitaProbes.h" // vita-checkprobe-inc\n'),
+     lambda m: m.group(0) + '#include "VitaConfig.h" // vita-worldcache-inc\n#include "VitaLevelEpoch.h"\n#include "Utils/Logger.h"\n#include <cstring>\n',
+     'vita-worldcache-inc')
+# 192. AllActors(Class) walked every slot of Level.Actors (GameReplicationInfo.Timer, every 0.2 s: 880 us, for one
+#      PlayerReplicationInfo). Now the slots holding an actor of the class are kept per class as a sorted list of indices: valid
+#      until the list is compacted (vitaActorsVersion) or the level goes; slots appended since are looked at on demand. The
+#      iterator still reads the live slot (null = destroyed: skipped, as before) and checks Tag/Event there, in index order.
+edit("Packages/Engine/Resources/Level/ULevel.cpp",
+     re.escape('\t\tActors.swap(newActorList);\n\t\tindexedLevel = this;\n'),
+     lambda m: m.group(0).replace('\t\tActors.swap(newActorList);\n', '\t\tActors.swap(newActorList);\n\t\tvitaActorsVersion++; // vita-actorsversion\n'),
+     'vita-actorsversion')
+edit("Packages/Engine/Resources/Level/ULevel.cpp",
+     re.escape('#include "Precomp.h"\n'),
+     lambda m: m.group(0) + '#include "VitaLevelEpoch.h" // vita-actorsversion-inc\n',
+     'vita-actorsversion-inc')
+edit("VM/Iterator.cpp",
+     re.escape('\tsize_t size = engine->Level->Actors.size();\n\twhile (index < size)\n\t{\n\t\tUActor* actor = engine->Level->Actors[index++];\n\t\tif (actor && VITA_ISA(actor, BaseClass->Name) && (!matchTag || actor->Tag() == MatchTag) && (!matchEvent || actor->Event() == MatchEvent))\n'),
+     lambda m: ('#ifdef __vita__ // vita-classindex\n'
+                '\t{\n'
+                '\t\tstruct ClassIndex { void* level = nullptr; int epoch = -1, version = -1; size_t scanned = 0; std::vector<uint32_t> slots; };\n'
+                '\t\tstatic std::unordered_map<const UObject*, ClassIndex> indexes;\n'
+                '\t\tstatic int epochSeen = -1;\n'
+                '\t\tif (epochSeen != vitaLevelEpoch)\n\t\t{\n\t\t\tepochSeen = vitaLevelEpoch;\n\t\t\tindexes.clear();\n\t\t}\n'
+                '\t\tauto& actors = engine->Level->Actors;\n'
+                '\t\tClassIndex& ci = indexes[BaseClass];\n'
+                '\t\tif (ci.level != engine->Level || ci.epoch != vitaLevelEpoch || ci.version != vitaActorsVersion || ci.scanned > actors.size())\n\t\t{\n'
+                '\t\t\tci.level = engine->Level;\n\t\t\tci.epoch = vitaLevelEpoch;\n\t\t\tci.version = vitaActorsVersion;\n\t\t\tci.scanned = 0;\n\t\t\tci.slots.clear();\n\t\t}\n'
+                '\t\tfor (; ci.scanned < actors.size(); ci.scanned++)\n\t\t{\n'
+                '\t\t\tUActor* a = actors[ci.scanned];\n'
+                '\t\t\tif (a && VITA_ISA(a, BaseClass->Name))\n\t\t\t\tci.slots.push_back((uint32_t)ci.scanned);\n\t\t}\n'
+                '\t\tfor (auto it = std::lower_bound(ci.slots.begin(), ci.slots.end(), (uint32_t)index); it != ci.slots.end(); ++it)\n\t\t{\n'
+                '\t\t\tindex = (size_t)*it + 1;\n'
+                '\t\t\tUActor* actor = actors[*it];\n'
+                '\t\t\tif (actor && (!matchTag || actor->Tag() == MatchTag) && (!matchEvent || actor->Event() == MatchEvent))\n\t\t\t{\n'
+                '\t\t\t\t*ReturnValue = actor;\n\t\t\t\treturn true;\n\t\t\t}\n\t\t}\n'
+                '\t\tindex = actors.size();\n'
+                '\t\t*ReturnValue = nullptr;\n\t\treturn false;\n'
+                '\t}\n#endif\n' + m.group(0)),
+     'vita-classindex')
+edit("VM/Iterator.cpp",
+     re.escape('#include "Precomp.h"\n'),
+     lambda m: m.group(0) + '#include "VitaLevelEpoch.h" // vita-classindex-inc\n#include <unordered_map>\n',
+     'vita-classindex-inc')
+# 193. Engine.GameReplicationInfo.Timer natively (vita/VitaScriptNatives.cpp; render.cfg gri_timer): ~820 us a call in the VM,
+#      ~250 us a frame in every level.
+edit("Packages/Engine/Actors/UActor.cpp",
+     re.escape('\t\t\tif (!bTimerLoop())\n\t\t\t\tTimerRate() = 0.0f;\n\t\t\tCallEvent(this, EventName::Timer);\n'),
+     lambda m: m.group(0).replace('\t\t\tCallEvent(this, EventName::Timer);\n', '#ifdef __vita__ // vita-gritimer\n\t\t\tif (!VitaGRITimer(this))\n#endif\n\t\t\tCallEvent(this, EventName::Timer);\n'),
+     'vita-gritimer')
+edit("Packages/Engine/Actors/UActor.cpp",
+     re.escape('#include "Precomp.h"\n'),
+     lambda m: m.group(0) + '#ifdef __vita__ // vita-gritimer-decl\nclass UActor;\nbool VitaGRITimer(UActor* actor); // vita/VitaScriptNatives.cpp\n#endif\n',
+     'vita-gritimer-decl')
+# 194. ExpressionValue's copy and move of a scalar (Nothing, Byte, Int, Bool, Float, Object: at most 4 bytes on the Vita) copied
+#      the whole value buffer (48 bytes: it is sized for Coords) on every push, pop and move of the VM's value stack. Now 4 bytes
+#      (the rest of the buffer is never read for those types).
+edit("VM/ExpressionValue.h",
+     r'default: Buffer = v\.Buffer; break;',
+     lambda m: 'default: VITA_SCALAR_COPY(Buffer, v.Buffer); break;',
+     'VITA_SCALAR_COPY(Buffer')
+edit("VM/ExpressionValue.h",
+     re.escape('#include "Packages/Core/Properties/UStructProperty.h"\n'),
+     lambda m: m.group(0) + ('#include <cstring>\n'
+                             '#ifdef __vita__ // vita-scalarcopy\n'
+                             'static_assert(sizeof(void*) == 4 && sizeof(float) == 4 && sizeof(int32_t) == 4, "VITA_SCALAR_COPY copies 4 bytes");\n'
+                             '#define VITA_SCALAR_COPY(dst, src) memcpy(&(dst), &(src), 4)\n'
+                             '#else\n#define VITA_SCALAR_COPY(dst, src) ((dst) = (src))\n#endif\n'),
+     'vita-scalarcopy')
+# 181b. render.cfg trace_check=1: every decal trace also made the old way (all hits, the first by time and order), compared
+edit("Collision/TopLevel/CollisionSystem.cpp",
+     re.escape('\tTraceRayModel trace;\n\treturn trace.VitaTraceFirst(LevelInfo, Level->Model, origin, tmin, dirNormalized, tmax, visibilityOnly);\n'),
+     lambda m: ('\tTraceRayModel trace;\n'
+                '\tCollisionHitList vitaFirst = trace.VitaTraceFirst(LevelInfo, Level->Model, origin, tmin, dirNormalized, tmax, visibilityOnly);\n'
+                '\tstatic const bool vitaCheck = VitaConfigInt("trace_check", 0) != 0; // vita-tracecheck\n'
+                '\tif (vitaCheck)\n\t{\n'
+                '\t\tstatic unsigned traces = 0, wrong = 0;\n'
+                '\t\tCollisionHitList all = TraceDecal(origin, tmin, dirNormalized, tmax, visibilityOnly);\n'
+                '\t\tconst CollisionHit* first = nullptr;\n'
+                '\t\tfor (const CollisionHit& h : all)\n\t\t\tif (!first || h.Fraction < first->Fraction)\n\t\t\t\tfirst = &h;\n'
+                '\t\tconst bool same = first ? (!vitaFirst.empty() && vitaFirst.front().Fraction == first->Fraction && vitaFirst.front().Node == first->Node && vitaFirst.front().Normal == first->Normal) : vitaFirst.empty();\n'
+                '\t\ttraces++;\n\t\tif (!same)\n\t\t\twrong++;\n'
+                '\t\tif (traces % 200 == 0 || (!same && wrong < 20))\n'
+                '\t\t\tLogMessage("VitaTraceCheck: " + std::to_string(traces) + " decal traces, " + std::to_string(wrong) + " differ");\n\t}\n'
+                '\treturn vitaFirst;\n'),
+     'vita-tracecheck')
+# 195. The menu book's UWindow scripts natively (vita/VitaScriptNatives.cpp; render.cfg uwindow_natives, uwindow_check): the folio
+#      page ran at 3 fps (UWindowWrappedTextArea.Paint walks its whole ring buffer: ~750 WrapClipText("") a frame), the options page
+#      at 25-30. Canvas.SetPos/SetOrigin/SetClip, UWindowWindow.TextSize/ClipText/DrawStretchedTextureSegment and WrapClipText of an
+#      empty line, each exactly as its script. Frame::Call asks once per function for a native twin (UStruct::VitaScriptNative).
+edit("Packages/Core/UStruct.h",
+     re.escape("\tint8_t VitaEmptyFunc = -1; // vita-emptyfunc-field"),
+     lambda m: "\tint8_t VitaScriptNativeState = -1; // vita-scriptnative-field: a native twin (1, VitaScriptNative), none (0), unknown (-1)\n\tvoid* VitaScriptNative = nullptr;\n" + m.group(0),
+     'vita-scriptnative-field')
+edit("VM/Frame.cpp",
+     re.escape('#include "VitaProbes.h" // vita-emptyfunc-inc\n'),
+     lambda m: m.group(0) + '#include "VitaScriptNatives.h" // vita-scriptnative-inc\n',
+     'vita-scriptnative-inc')
+edit("VM/Frame.cpp",
+     re.escape("\telse\n\t{\n#ifdef __vita__ // vita-emptyfunc-skip\n"),
+     lambda m: ("\telse\n\t{\n#ifdef __vita__ // vita-scriptnative-call\n"
+                "\t\tif (func->VitaScriptNativeState < 0)\n\t\t{\n"
+                "\t\t\tfunc->VitaScriptNative = (void*)VitaFindScriptNative(func, instance);\n"
+                "\t\t\tfunc->VitaScriptNativeState = func->VitaScriptNative ? 1 : 0;\n\t\t}\n"
+                "\t\tif (func->VitaScriptNativeState == 1)\n\t\t{\n"
+                "\t\t\tExpressionValue vitaResult;\n"
+                "\t\t\tif (VitaRunScriptNative((VitaScriptNativeFn)func->VitaScriptNative, func, instance, args, vitaResult))\n"
+                "\t\t\t\treturn vitaResult;\n\t\t}\n#endif\n"
+                "#ifdef __vita__ // vita-emptyfunc-skip\n"),
+     'vita-scriptnative-call')
+# 197. Mouse sensitivity (and the other PlayerPawn options) went back to User.ini's value at every level change: HP1's options page
+#      only sets GetPlayerOwner().MouseSensitivity (FEOptionsPage.SensitivityChanged; no script calls SaveConfig for it), and
+#      Engine::LoadMap's login reads the new player's PlayerPawn options from User.ini (UPlayerPawn::LoadProperties). The player's
+#      options are written to the ini before the old level goes, and at exit (KnowWonder games only).
+edit("Engine.cpp",
+     re.escape("\taudiodev->StopSounds();\n\tUnloadMap();\n"),
+     lambda m: ("#ifdef __vita__ // vita-savepawncfg-map\n"
+                "\tif (LaunchInfo.IsKnowWonder() && Level && viewport && viewport->Actor())\n"
+                "\t\tviewport->Actor()->SaveConfig();   // the options page's values reach the next level's player (UPlayerPawn::LoadProperties)\n"
+                "#endif\n" + m.group(0)),
+     'vita-savepawncfg-map')
+edit("Engine.cpp",
+     re.escape('\tpackages->SetIniValue("System", "Engine.SurrealWindowSystem", "WindowSystem", windowingSystemName);\n'),
+     lambda m: ("#ifdef __vita__ // vita-savepawncfg-exit\n"
+                "\tif (LaunchInfo.IsKnowWonder() && Level && viewport && viewport->Actor())\n"
+                "\t\tviewport->Actor()->SaveConfig();\n"
+                "#endif\n" + m.group(0)),
+     'vita-savepawncfg-exit')
+# 195b. The natives' classes were looked up with FindClass at the first script call of the boot, which loads the UWindow package
+#       that early: the menu cursor no longer moved. Now taken from the calling window's class chain, at the first UWindowWindow
+#       call; until then the function is asked about again (VitaFindScriptNative returns -1).
+edit("VM/Frame.cpp",
+     re.escape("\t\t\tfunc->VitaScriptNative = (void*)VitaFindScriptNative(func, instance);\n\t\t\tfunc->VitaScriptNativeState = func->VitaScriptNative ? 1 : 0;\n"),
+     lambda m: ("\t\t\tVitaScriptNativeFn vitaFn = nullptr; // vita-scriptnative-later\n"
+                "\t\t\tconst int vitaFound = VitaFindScriptNative(func, instance, vitaFn);\n"
+                "\t\t\tfunc->VitaScriptNative = (void*)vitaFn;\n"
+                "\t\t\tif (vitaFound >= 0)\n\t\t\t\tfunc->VitaScriptNativeState = (int8_t)vitaFound;\n"),
+     'vita-scriptnative-later')
+# 198. HP1's debug mode in a debug build (vita_main.cpp VitaGameDebug: bash build.sh debug, render.cfg game_debug): HPConsole.bDebugMode
+#      set on the console when it is made; FEMainPage.BeforePaint then shows Level Select, Language, Credits and Version.
+edit("Engine.cpp",
+     re.escape("\tconsole->Viewport() = viewport;\n\tcanvas->Viewport() = viewport;\n"),
+     lambda m: ("#ifdef __vita__ // vita-gamedebug\n"
+                "\tif (VitaGameDebug() && LaunchInfo.IsHarryPotter1() && console->HasProperty(\"bDebugMode\"))\n\t{\n"
+                "\t\tconsole->SetBool(\"bDebugMode\", true);\n"
+                "\t\tLogMessage(\"Game debug build: HPConsole.bDebugMode on (Level Select in the title menu)\");\n\t}\n"
+                "#endif\n" + m.group(0)),
+     'vita-gamedebug')
+edit("Engine.cpp",
+     re.escape('#include "Precomp.h"\n'),
+     lambda m: m.group(0) + "#ifdef __vita__ // vita-gamedebug-decl\nbool VitaGameDebug(); // vita_main.cpp\n#endif\n",
+     'vita-gamedebug-decl')
+# 199. Canvas text with no font (Canvas.Font None) dereferenced null in RenderSubsystem: HP1's debug mode (#198) draws text before
+#      its font is set, a data abort in DrawText at the first frame of the title menu. No font: nothing drawn, size 0 (logged once).
+edit("Render/RenderCanvas.cpp",
+     re.escape("bool newlineAtEnd, const std::string& text, uint32_t polyflags, bool center, float spaceX, float spaceY, float clipX, float clipY, bool noDraw)\n{\n"),
+     lambda m: m.group(0) + "#ifdef __vita__ // vita-nofont-text\n\tif (!font)\n\t{\n\t\tstatic bool logged = false;\n\t\tif (!logged)\n\t\t\tLogMessage(\"Canvas.DrawText without a font: not drawn\");\n\t\tlogged = true;\n\t\treturn;\n\t}\n#endif\n",
+     'vita-nofont-text')
+edit("Render/RenderCanvas.cpp",
+     re.escape("const std::string& text, uint32_t polyflags, bool checkHotKey, float clipX, float clipY, bool center)\n{\n"),
+     lambda m: m.group(0) + "#ifdef __vita__ // vita-nofont-clipped\n\tif (!font)\n\t\treturn;\n#endif\n",
+     'vita-nofont-clipped')
+edit("Render/RenderCanvas.cpp",
+     re.escape("vec2 RenderSubsystem::GetTextSize(UFont* font, const std::string& text, float spaceX, float spaceY)\n{\n"),
+     lambda m: m.group(0) + "#ifdef __vita__ // vita-nofont-size\n\tif (!font)\n\t\treturn vec2(0.0f);\n#endif\n",
+     'vita-nofont-size')
+# 200. Laps inside a light map built again (LightSystem::GetLightmap): setup, the static lights made or loaded, the dynamic
+#      lights, the conversion. Lev4_Sneak2's opening: ~36 built again a frame, 9 ms.
+edit("Light/LightSystem_Light.cpp",
+     re.escape("\t\tBuilder.Setup(model, coords, lightmapIndex);\n"),
+     lambda m: "\t\tVITA_LAP_START; // vita-lmr-start\n" + m.group(0) + "\t\tVITA_LAP(LmRSetup);\n",
+     'vita-lmr-start')
+edit("Light/LightSystem_Light.cpp",
+     re.escape("\t\t\tBuilder.SaveStaticLight(lmtexture->StaticLightColors);\n\t\t}\n#else\n"),
+     lambda m: "\t\t\tBuilder.SaveStaticLight(lmtexture->StaticLightColors);\n\t\t\tVITA_LAP(LmRStaticAll); // vita-lmr-static\n\t\t}\n#else\n",
+     'vita-lmr-static')
+edit("Light/LightSystem_Light.cpp",
+     re.escape("\t\t\tBuilder.LoadStaticLight(lmtexture->StaticLightColors);\n\t\t}\n\n\t\tBuilder.AddDynamicLights(model, lightmapIndex, TempDynLightList);\n"),
+     lambda m: ("\t\t\tBuilder.LoadStaticLight(lmtexture->StaticLightColors);\n\t\t\tVITA_LAP(LmRStaticKept); // vita-lmr-kept\n\t\t}\n\n"
+                "\t\tBuilder.AddDynamicLights(model, lightmapIndex, TempDynLightList);\n\t\tVITA_LAP(LmRDynamic);\n"),
+     'vita-lmr-kept')
+edit("Light/LightSystem_Light.cpp",
+     re.escape("#ifdef __vita__ // vita-rebuildend\n"),
+     lambda m: "\t\tVITA_LAP(LmRConvert); // vita-lmr-convert\n" + m.group(0),
+     'vita-lmr-convert')
+# 201. A light map built again and again (a dynamic light moving near it: Lev4_Sneak2's opening, ~35 a frame) worked out every
+#      texel's world location each time (LightmapBuilder::Setup, 1.7 ms a frame there). From its second build on, the locations are
+#      kept with it and copied when the map's coordinates are bit for bit the same (a moving mover's are not: made again).
+edit("Light/LightmapBuilder.h",
+     re.escape("\tint Width() const { return width; }\n"),
+     lambda m: ("#ifdef __vita__ // vita-lmpoints-api\n"
+                "\t// Setup without working out the texels' world locations: they are copied from a kept set (#201)\n"
+                "\tvoid VitaSetupKept(UModel* model, const Coords& mapCoords, int lightMap, const Array<vec3>& keptPoints);\n"
+                "\tconst Array<vec3>& VitaPoints() const { return points; }\n"
+                "#endif\n" + m.group(0)),
+     'vita-lmpoints-api')
+edit("Light/LightmapBuilder.cpp",
+     re.escape("void LightmapBuilder::SetAmbientLight(UZoneInfo* zoneActor)\n"),
+     lambda m: ("#ifdef __vita__ // vita-lmpoints-fn\n"
+                "void LightmapBuilder::VitaSetupKept(UModel* model, const Coords& mapCoords, int lightMap, const Array<vec3>& keptPoints)\n{\n"
+                "\tconst LightMapIndex& lmindex = model->LightMap[lightMap];\n"
+                "\twidth = lmindex.UClamp;\n\theight = lmindex.VClamp;\n"
+                "\tnormal = normalize(mapCoords.ZAxis);\n\tbase = mapCoords.Origin;\n"
+                "\tsize_t size = (size_t)width * height;\n"
+                "\tif (points.size() < size)\n\t\tpoints.resize(size);\n"
+                "\tif (lightcolors.size() < size)\n\t\tlightcolors.resize(size);\n"
+                "\tif (illuminationmap.size() < size)\n\t\tilluminationmap.resize(size);\n"
+                "\tstd::memcpy(points.data(), keptPoints.data(), size * sizeof(vec3));\n}\n\n"
+                "#endif\n" + m.group(0)),
+     'vita-lmpoints-fn')
+edit("Light/LightSystem.h",
+     re.escape("\tuintptr_t SteadyAnimatedKey = 0;\n"),
+     lambda m: m.group(0) + ("\t// vita-lmpoints-fields: the texels' world locations, kept from the second build on, and the coordinates they were made with (#201)\n"
+                             "\tArray<vec3> VitaPoints;\n\tCoords VitaPointsCoords;\n\tbool VitaPointsValid = false;\n\tuint8_t VitaBuilds = 0;\n"),
+     'vita-lmpoints-fields')
+edit("Light/LightSystem_Light.cpp",
+     re.escape("\t\tBuilder.Setup(model, coords, lightmapIndex);\n\t\tVITA_LAP(LmRSetup);\n"),
+     lambda m: ("#ifdef __vita__ // vita-lmpoints-use\n"
+                "\t\tauto vitaSameBits = [](const vec3& a, const vec3& b) { return std::memcmp(&a, &b, sizeof(vec3)) == 0; };\n"
+                "\t\tconst size_t vitaTexels = (size_t)lmindex.UClamp * lmindex.VClamp;\n"
+                "\t\tif (lmtexture && lmtexture->VitaPointsValid && lmtexture->VitaPoints.size() == vitaTexels &&\n"
+                "\t\t\tvitaSameBits(lmtexture->VitaPointsCoords.Origin, coords.Origin) && vitaSameBits(lmtexture->VitaPointsCoords.XAxis, coords.XAxis) &&\n"
+                "\t\t\tvitaSameBits(lmtexture->VitaPointsCoords.YAxis, coords.YAxis) && vitaSameBits(lmtexture->VitaPointsCoords.ZAxis, coords.ZAxis))\n"
+                "\t\t\tBuilder.VitaSetupKept(model, coords, lightmapIndex, lmtexture->VitaPoints);\n"
+                "\t\telse\n\t\t{\n"
+                "\t\t\tBuilder.Setup(model, coords, lightmapIndex);\n"
+                "\t\t\tif (lmtexture && !dynamicMover && ++lmtexture->VitaBuilds >= 2)\n\t\t\t{\n"
+                "\t\t\t\tlmtexture->VitaPoints.resize(vitaTexels);\n"
+                "\t\t\t\tstd::memcpy(lmtexture->VitaPoints.data(), Builder.VitaPoints().data(), vitaTexels * sizeof(vec3));\n"
+                "\t\t\t\tlmtexture->VitaPointsCoords = coords;\n\t\t\t\tlmtexture->VitaPointsValid = true;\n\t\t\t}\n\t\t}\n"
+                "#else\n" + m.group(0)[:m.group(0).index("\t\tVITA_LAP")] + "#endif\n\t\tVITA_LAP(LmRSetup);\n"),
+     'vita-lmpoints-use')
+# 202. A faster way through the commonest statements (vita/VitaFastEval.inc; render.cfg fast_eval, fast_eval_check): a statement made
+#      only of variables, constants, conversions, struct members, contexts, assignments, native operators and calls is evaluated
+#      by recursion, each node as its RunExpr case does it; everything else in RunExpr's stack machine as before.
+edit("VM/Expression.h",
+     re.escape("\tExpressionType Type;\n\tint StatementIndex = -1;\n"),
+     lambda m: ("\tExpressionType Type;\n"
+                "\tint8_t VitaFast = -1; // vita-fasteval-fields: this node and its tree for VitaFastEval (1), not (0), unknown (-1)\n"
+                "\tint8_t VitaFastStmt = -1; // as a whole statement\n"
+                "\tint StatementIndex = -1;\n"),
+     'vita-fasteval-fields')
+edit("VM/Frame.cpp",
+     re.escape("ExpressionEvalResult Frame::RunExpr(Expression* statementExpr, UObject* self, UObject* context, void* variables)\n{\n"),
+     lambda m: ('#include "VitaFastEval.inc" // vita-fasteval-inc\n\n' + m.group(0) +
+                "#ifdef __vita__ // vita-fasteval-use\n"
+                "\t{\n\t\tExpressionEvalResult vitaFast;\n"
+                "\t\tif (VitaFastTry(statementExpr, self, context, variables, vitaFast))\n\t\t\treturn vitaFast;\n\t}\n"
+                "#endif\n"),
+     'vita-fasteval-inc')
+# 202b. fast_eval_check's second run (RunExpr is private: the comparison is made in RunExpr itself)
+edit("VM/Frame.cpp",
+     re.escape("\t\tif (VitaFastTry(statementExpr, self, context, variables, vitaFast))\n\t\t\treturn vitaFast;\n"),
+     lambda m: ("\t\tconst int vitaTaken = VitaFastTry(statementExpr, self, context, variables, vitaFast); // vita-fasteval-check\n"
+                "\t\tif (vitaTaken == 1)\n\t\t\treturn vitaFast;\n"
+                "\t\tif (vitaTaken == 2)\n\t\t{\n"
+                "\t\t\tvitaFastOff = true;\n"
+                "\t\t\tstruct VitaRestore { ~VitaRestore() { vitaFastOff = false; } } vitaRestore;\n"
+                "\t\t\tExpressionEvalResult vitaNormal = RunExpr(statementExpr, self, context, variables);\n"
+                "\t\t\tVitaFastCompare(statementExpr, vitaFast, vitaNormal);\n"
+                "\t\t\treturn vitaNormal;\n\t\t}\n"),
+     'vita-fasteval-check')
+# 202c. Why a statement stays in RunExpr (VitaFastEval statistics, render.cfg fast_eval_stats)
+edit("VM/Expression.h",
+     re.escape("\tint8_t VitaFastStmt = -1; // as a whole statement\n"),
+     lambda m: m.group(0) + "\tuint8_t VitaFastWhy = 0; // vita-fastwhy-field: the type of the node that keeps the statement in RunExpr\n",
+     'vita-fastwhy-field')
+# 202d. Frame::Run takes a fast statement straight into its own result (VitaFastRunInto), not through RunExpr's returned copy
+edit("VM/Frame.cpp",
+     re.escape("\t\tExpressionEvalResult result = RunExpr(statement, Object, Object, Variables);\n"),
+     lambda m: ("#ifdef __vita__ // vita-fasteval-run\n"
+                "\t\tExpressionEvalResult result;\n"
+                "\t\tif (!VitaFastRunInto(statement, Object, Object, Variables, result))\n"
+                "\t\t\tresult = RunExpr(statement, Object, Object, Variables);\n"
+                "#else\n" + m.group(0) + "#endif\n"),
+     'vita-fasteval-run')
+edit("VM/Frame.cpp",
+     re.escape("\t{\n\t\tExpressionEvalResult vitaFast;\n\t\tconst int vitaTaken"),
+     lambda m: "\tif (statementExpr->VitaFastStmt != 0) // vita-fasteval-known: not for a statement already known to stay here\n" + m.group(0),
+     'vita-fasteval-known')
+edit("VM/Frame.cpp",
+     re.escape('#include "VitaProbes.h" // vita-emptyfunc-inc\n'),
+     lambda m: m.group(0) + "#ifdef __vita__ // vita-fasteval-decl\nstatic bool VitaFastRunInto(Expression* statement, UObject* self, UObject* context, void* variables, ExpressionEvalResult& result);\n#endif\n",
+     'vita-fasteval-decl')
+# 203. A frame's projected level points kept (BspClipper: VitaPointPos/Dist by the model's point index, valid while VitaPointGen is
+#      the clipper's Setup count): BSP surfaces share their corners, and every surface projected each of its corners again
+#      (clip: project ~3.5 us a surface). The same expressions as before on a miss, so a kept value is the value it would compute.
+#      render.cfg point_cache=0: off; point_cache_check=1: every kept value computed again and compared bit for bit.
+edit("Render/BspClipper.h",
+     re.escape("\tbool VitaCheckPolygon(const vec3* vertices, uint32_t count, bool solid);\n"),
+     lambda m: m.group(0) + ("\t// vita-pointcache-fields (#203): the corners' model point indexes for the next CheckSurface (or null), and the kept projections\n"
+                             "\tconst int* VitaPointIndex = nullptr;\n"
+                             "\tstd::vector<vec4> VitaPointPos;\n\tstd::vector<float> VitaPointDist;\n\tstd::vector<uint32_t> VitaPointStamp;\n"
+                             "\tuint32_t VitaPointGen = 1;\n"),
+     'vita-pointcache-fields')
+edit("Render/BspClipper.cpp",
+     re.escape("\tWorldToProjection = world_to_projection;\n\tFrustumClip = FrustumPlanes(world_to_projection);\n"),
+     lambda m: m.group(0) + ("#ifdef __vita__ // vita-pointcache-gen: a new view, the kept projections are old\n"
+                             "\tif (++VitaPointGen == 0)\n\t{\n\t\tstd::fill(VitaPointStamp.begin(), VitaPointStamp.end(), 0u);\n\t\tVitaPointGen = 1;\n\t}\n"
+                             "#endif\n"),
+     'vita-pointcache-gen')
+edit("Render/VisibleFrame.cpp",
+     re.escape("\t\tvitaSurfaceVisible = Clipper.CheckSurface(points, numverts, (PolyFlags & PF_NoOcclude) == 0);\n"),
+     lambda m: ("\t\t{\n#ifdef __vita__ // vita-pointcache-idx: the corners' point indexes, in the order of 'points'\n"
+                "\t\t\tint vitaIdx[32];\n"
+                "\t\t\tif (numverts <= 32)\n\t\t\t{\n"
+                "\t\t\t\tfor (int j = 0; j < numverts; j++)\n"
+                "\t\t\t\t\tvitaIdx[MirrorFlag ? numverts - 1 - j : j] = v[j].Vertex;\n"
+                "\t\t\t\tClipper.VitaPointIndex = vitaIdx;\n\t\t\t}\n#endif\n"
+                "\t" + m.group(0) +
+                "#ifdef __vita__\n\t\t\tClipper.VitaPointIndex = nullptr;\n#endif\n\t\t}\n"),
+     'vita-pointcache-idx')
+edit("Render/BspClipper.h",
+     re.escape("\tint VitaWidth() const { return ViewportWidth; }\n"),
+     lambda m: m.group(0) + "\tvoid VitaSetPointIndex(const int* index) { VitaPointIndex = index; } // vita-pointcache-set (#203)\n",
+     'vita-pointcache-set')
+edit("Render/VisibleFrame.cpp",
+     re.escape("\t\t\t\tClipper.VitaPointIndex = vitaIdx;\n"),
+     lambda m: "\t\t\t\tClipper.VitaSetPointIndex(vitaIdx); // vita-pointcache-setcall\n",
+     'vita-pointcache-setcall')
+edit("Render/VisibleFrame.cpp",
+     re.escape("\t\t\tClipper.VitaPointIndex = nullptr;\n"),
+     lambda m: "\t\t\tClipper.VitaSetPointIndex(nullptr); // vita-pointcache-unset\n",
+     'vita-pointcache-unset')
+# 204. LaunchInfo.IsHarryPotter1() / IsHarryPotter2() / IsKnowWonder() compared gameExecutableName with a literal at every call
+#      (std::string == "HP"): ~200 places, many per script call, per actor tick, per physics step. The answer is kept in the
+#      struct (vitaGame: 0 none, 1 HP1, 2 HP2; -1 not yet), reset where GameFolder.cpp names the executable.
+edit("GameFolder.h",
+     re.escape('\tbool IsHarryPotter1() const { return gameExecutableName == "HP"; }\n\tbool IsHarryPotter2() const { return gameExecutableName == "Game"; }\n'),
+     lambda m: ("#ifdef __vita__ // vita-gamecache\n"
+                "\tmutable int8_t vitaGame = -1;   // HP1 1, HP2 2, else 0 (-1: not worked out); reset when gameExecutableName is set\n"
+                "\tint VitaGame() const { if (vitaGame < 0) vitaGame = gameExecutableName == \"HP\" ? 1 : (gameExecutableName == \"Game\" ? 2 : 0); return vitaGame; }\n"
+                "\tbool IsHarryPotter1() const { return VitaGame() == 1; }\n"
+                "\tbool IsHarryPotter2() const { return VitaGame() == 2; }\n"
+                "#else\n" + m.group(0) + "#endif\n"),
+     'vita-gamecache')
+edit("GameFolder.h",
+     re.escape("\tbool IsKnowWonder() const { return IsHarryPotter1() || IsHarryPotter2(); }\n"),
+     lambda m: ("#ifdef __vita__ // vita-gamecache-kw\n\tbool IsKnowWonder() const { return VitaGame() != 0; }\n#else\n" + m.group(0) + "#endif\n"),
+     'vita-gamecache-kw')
+edit("GameFolder.cpp",
+     re.escape("\t\tinfo.gameExecutableName = fs::path(ue1_game.second).stem().string();\n"),
+     lambda m: m.group(0) + "#ifdef __vita__ // vita-gamecache-reset\n\t\tinfo.vitaGame = -1;\n#endif\n",
+     'vita-gamecache-reset')
+# 205. UActor::UpdateBspInfo worked out a skeletal mesh's mesh-to-world box (three mat4 products, a box transform, a second
+#      Coords::Rotation) and then overwrote it with KW::GetRenderBoundingBox: in KnowWonder games the skeletal box alone.
+edit("Packages/Engine/Actors/UActor_Render.cpp",
+     re.escape("\tif (dt == DT_Mesh && Mesh())\n\t{\n\t\tUMesh* mesh = Mesh();\n"),
+     lambda m: ("#ifdef __vita__ // vita-skelbox-only: the box below would be overwritten (KW::GetRenderBoundingBox)\n"
+                "\tUSkeletalMesh* vitaSkel = (dt == DT_Mesh && Mesh() && engine->LaunchInfo.IsKnowWonder()) ? UObject::TryCast<USkeletalMesh>(Mesh()) : nullptr;\n"
+                "\tif (vitaSkel)\n\t{\n\t\tVITA_PROBE(BspSkelBox);\n\t\tbbox = KW::GetRenderBoundingBox(this, vitaSkel);\n\t}\n"
+                "\telse\n#endif\n" + m.group(0)),
+     'vita-skelbox-only')
+# 206. KW::SetupMeshLighting's 'does the light see the actor' check (ModelLineCheck on the level BSP, each light every 16 frames per
+#      actor) through #191's table of level line checks (exact: same line, same answer); probe 'mesh light: sees the actor'.
+edit("../../knowwonder/KWLevelCheck.cpp",
+     re.escape("\t// IDA Engine.dll: ?MultiLineCheck@ULevel@@UAEPAUFCheckResult@@AAVFMemStack@@VFVector@@11HPAVALevelInfo@@E@Z [HP1 0x103AC620]\n"),
+     lambda m: ("#ifdef __vita__ // vita-wlcache-export: the table for other callers (KWMeshLight.cpp, #206)\n"
+                "\tbool VitaLevelLineCheckCached(CheckResult& result, const vec3& end, const vec3& start, const vec3& extent, uint8_t extraNodeFlags)\n"
+                "\t{\n\t\treturn VitaWorldLineCheck(result, end, start, extent, extraNodeFlags);\n\t}\n#endif\n\n" + m.group(0)),
+     'vita-wlcache-export')
+edit("../../knowwonder/KWMeshLight.cpp",
+     re.escape("\t\t\t\t\tpicked = ModelLineCheck(hit, ModelFrame::Level(engine->Level->Model), light->Location(), location, vec3(0.0f), 0);\n"),
+     lambda m: ("#ifdef __vita__ // vita-meshlight-seecache\n"
+                "\t\t\t\t\t{\n\t\t\t\t\t\tVITA_PROBE(MeshLightSee);\n"
+                "\t\t\t\t\t\tpicked = VitaLevelLineCheckCached(hit, light->Location(), location, vec3(0.0f), 0);\n\t\t\t\t\t}\n"
+                "#else\n" + m.group(0) + "#endif\n"),
+     'vita-meshlight-seecache')
+edit("../../knowwonder/KWMeshLight.cpp",
+     re.escape("namespace KW\n{\n"),
+     lambda m: ("#ifdef __vita__ // vita-meshlight-seedecl\n#include \"VitaProbes.h\"\n"
+                "namespace KW { bool VitaLevelLineCheckCached(CheckResult& result, const vec3& end, const vec3& start, const vec3& extent, uint8_t extraNodeFlags); }\n#endif\n" + m.group(0)),
+     'vita-meshlight-seedecl')
+# 206b. probes: SetupMeshLighting's candidate count and its sort + picking loop
+edit("../../knowwonder/KWMeshLight.cpp",
+     re.escape("\t\tstd::stable_sort(candidates.begin(), candidates.end(), [](const Candidate& a, const Candidate& b) { return a.Importance > b.Importance; });\n"),
+     lambda m: ("#ifdef __vita__ // vita-meshlight-candprobe\n\t\tif (VitaProbes::enabled)\n\t\t\tVitaProbes::calls[VitaProbes::MeshLightCand] += (unsigned)candidates.size();\n"
+                "\t\tVITA_PROBE(MeshLightPick);\n#endif\n" + m.group(0)),
+     'vita-meshlight-candprobe')
+# 206c. probes: SetupMeshLighting as a whole and its BeginFrame
+edit("../../knowwonder/KWMeshLight.cpp",
+     re.escape("\tvoid SetupMeshLighting(MeshLighting& out, UActor* actor, UActor* lightActor, UZoneInfo* zone)\n\t{\n\t\tBeginFrame(actor);\n"),
+     lambda m: ("\tvoid SetupMeshLighting(MeshLighting& out, UActor* actor, UActor* lightActor, UZoneInfo* zone)\n\t{\n"
+                "#ifdef __vita__ // vita-meshlight-wholeprobe\n\t\tVITA_PROBE(MeshLightRest);\n\t\t{ VITA_PROBE(MeshLightBegin); BeginFrame(actor); }\n#else\n"
+                "\t\tBeginFrame(actor);\n#endif\n"),
+     'vita-meshlight-wholeprobe')
+# 206d. laps inside KW's mesh light BeginFrame
+edit("../../knowwonder/KWMeshLight.cpp",
+     re.escape("\t\t\tstd::uniform_real_distribution<float> frand(0.0f, 1.0f);\n"),
+     lambda m: "\t\t\tVITA_LAP_START; // vita-mlb-laps\n" + m.group(0),
+     'vita-mlb-laps')
+edit("../../knowwonder/KWMeshLight.cpp",
+     re.escape("#ifdef __vita__ // vita-framelights-use\n"),
+     lambda m: "\t\t\tVITA_LAP(MLBFlicker); // vita-mlb-flicker\n" + m.group(0),
+     'vita-mlb-flicker')
+edit("../../knowwonder/KWMeshLight.cpp",
+     re.escape("#ifdef __vita__ // vita-lightsnap-fill\n"),
+     lambda m: "\t\t\tVITA_LAP(MLBSnapshot); // vita-mlb-snap\n" + m.group(0),
+     'vita-mlb-snap')
+edit("../../knowwonder/KWMeshLight.cpp",
+     re.escape("\t\t\ts.Grid.Update(s.Lights, s.LightLocations, s.LightRadii); // vita-lightgrid-update\n"),
+     lambda m: "\t\t\tVITA_LAP(MLBFill); // vita-mlb-fill\n" + m.group(0) + "\t\t\tVITA_LAP(MLBGrid);\n",
+     'vita-mlb-fill')
+# 207. A fog map built again (Lev2_Fire1 while the camera moves) made a new FogmapBuilder each time: its two arrays malloc'd and
+#      freed per map (slow on a full heap, see #200). One builder kept (the main thread only); Setup clears only the texels used
+#      (the rest of a bigger array is never read: the copy out takes Width x Height).
+edit("Light/LightSystem_Fog.cpp",
+     re.escape("\tFogmapBuilder builder;\n\tbuilder.Setup(model, mapCoords, lightMap, zoneActor);\n"),
+     lambda m: ("#ifdef __vita__ // vita-fogbuilder-keep\n\tstatic FogmapBuilder builder;\n#else\n\tFogmapBuilder builder;\n#endif\n"
+                "\tbuilder.Setup(model, mapCoords, lightMap, zoneActor);\n"),
+     'vita-fogbuilder-keep')
+edit("Light/FogmapBuilder.cpp",
+     re.escape("\tvec4 zero(0.0f);\n\tfor (vec4& c : fogcolors)\n\t\tc = zero;\n"),
+     lambda m: ("\tvec4 zero(0.0f);\n#ifdef __vita__ // vita-fogbuilder-clear: the texels of this map only\n"
+                "\tfor (size_t i = 0; i < size; i++)\n\t\tfogcolors[i] = zero;\n#else\n"
+                "\tfor (vec4& c : fogcolors)\n\t\tc = zero;\n#endif\n"),
+     'vita-fogbuilder-clear')
+# 208. The clipper's screen as one bit a pixel (vita/VitaClipBits.h; render.cfg clipper_bits, default 1): IsVisible and DrawSpan
+#      on 32-pixel words instead of walking and editing the span lists (same answers: tests/clipbitstest.cpp, 1.6 M random
+#      operations, 0 differ, collected portal spans included).
+edit("Render/BspClipper.h",
+     re.escape('#include "VitaConfig.h" // vita-clipperinc\n'),
+     lambda m: m.group(0) + '#include "VitaClipBits.h" // vita-clipbits-inc\n',
+     'vita-clipbits-inc')
+edit("Render/BspClipper.h",
+     re.escape("\tvoid VitaSetPointIndex(const int* index) { VitaPointIndex = index; } // vita-pointcache-set (#203)\n"),
+     lambda m: m.group(0) + "\tVitaClipBits VitaBits; // vita-clipbits-fields (#208)\n\tbool VitaUseBits = false;\n",
+     'vita-clipbits-fields')
+edit("Render/BspClipper.cpp",
+     re.escape("BspClipper::BspClipper()\n{\n\tViewport.resize(ViewportHeight);\n"),
+     lambda m: m.group(0) + ("#ifdef __vita__ // vita-clipbits-ctor\n"
+                             "\tVitaUseBits = VitaConfigInt(\"clipper_bits\", 1) != 0;\n"
+                             "\tif (VitaUseBits)\n\t\tVitaBits.Resize(ViewportWidth, ViewportHeight);\n#endif\n"),
+     'vita-clipbits-ctor')
+edit("Render/BspClipper.cpp",
+     re.escape("\tfor (auto& line : Viewport)\n\t{\n\t\tline.clear();\n\t\tline.push_back(left);\n\t\tline.push_back(right);\n\t}\n"),
+     lambda m: ("#ifdef __vita__ // vita-clipbits-setup\n\tif (VitaUseBits)\n\t\tVitaBits.Clear();\n\telse\n#endif\n" + m.group(0)),
+     'vita-clipbits-setup')
+edit("Render/BspClipper.cpp",
+     re.escape("bool BspClipper::IsVisible(int16_t y, int16_t x0, int16_t x1)\n{\n"),
+     lambda m: m.group(0) + "#ifdef __vita__ // vita-clipbits-visible\n\tif (VitaUseBits)\n\t\treturn VitaBits.IsVisible(y, x0, x1);\n#endif\n",
+     'vita-clipbits-visible')
+edit("Render/BspClipper.cpp",
+     re.escape("\tnumDrawSpans++;\n\n\tauto& line = Viewport[y];\n"),
+     lambda m: ("\tnumDrawSpans++;\n\n#ifdef __vita__ // vita-clipbits-draw\n"
+                "\tif (VitaUseBits)\n\t{\n"
+                "\t\tif (CollectSpans)\n\t\t{\n"
+                "\t\t\tconst int c0 = std::max<int>(x0, 0), c1 = std::min<int>(x1, ViewportWidth);\n"
+                "\t\t\tif (c0 < c1)\n"
+                "\t\t\t\tVitaBits.OpenRuns(y, c0, c1, [&](int a, int e) { PortalSpan s; s.x0 = (int16_t)a; s.x1 = (int16_t)e; s.y = y; VisibleSpans.push_back(s); });\n"
+                "\t\t}\n"
+                "\t\treturn VitaBits.Fill(y, x0, x1);\n\t}\n#endif\n"
+                "\tauto& line = Viewport[y];\n"),
+     'vita-clipbits-draw')
+# 208b. clipper_bits read once (VitaConfig.h VitaClipperBits): the constructor read render.cfg for every BspClipper made
+edit("Render/BspClipper.cpp",
+     re.escape("\tVitaUseBits = VitaConfigInt(\"clipper_bits\", 1) != 0;\n"),
+     lambda m: "\tVitaUseBits = VitaClipperBits(); // vita-clipbits-once\n",
+     'vita-clipbits-once')
+# 210b. The name tables made before every other global (init_priority): with link-time optimization (#210) the global
+#       constructors run in another order and a global NameString of another file asked the tables before they existed (data
+#       abort in NameString::GetIndex at start). Harmless without LTO.
+edit("Package/NameString.cpp",
+     re.escape("Array<std::string> NameString::Names;\nstd::unordered_map<std::string, int> NameString::CompareStringToIndex;\nstd::unordered_map<std::string, std::pair<int, int>> NameString::SpellStringToIndex;\n"),
+     lambda m: ("#ifdef __vita__ // vita-names-first\n"
+                "__attribute__((init_priority(101))) Array<std::string> NameString::Names;\n"
+                "__attribute__((init_priority(101))) std::unordered_map<std::string, int> NameString::CompareStringToIndex;\n"
+                "__attribute__((init_priority(101))) std::unordered_map<std::string, std::pair<int, int>> NameString::SpellStringToIndex;\n"
+                "#else\n" + m.group(0) + "#endif\n"),
+     'vita-names-first')
+# 211. Statistics: how often the main view is bit for bit the one of the frame before (a replay of the BSP walk would only pay
+#      when it is): log line 'VitaViewSame: N of M main views unchanged' every 600 main views.
+edit("Render/VisibleFrame.cpp",
+     re.escape("\tVitaProbes::Lap vitaPortalLap; // vita-portallaps\n"),
+     lambda m: ("#ifdef __vita__ // vita-viewsame-stat\n"
+                "\tif (portalDepth == 0)\n\t{\n"
+                "\t\tstatic float lastView[19] = {};\n\t\tstatic unsigned same = 0, views = 0;\n"
+                "\t\tfloat now[19];\n\t\tstd::memcpy(now, worldToView.matrix, 64);\n\t\tnow[16] = location.x; now[17] = location.y; now[18] = location.z;\n"
+                "\t\tif (std::memcmp(now, lastView, sizeof(now)) == 0)\n\t\t\tsame++;\n"
+                "\t\tstd::memcpy(lastView, now, sizeof(now));\n"
+                "\t\tif (++views % 600 == 0)\n\t\t{\n"
+                "\t\t\tLogMessage(\"VitaViewSame: \" + std::to_string(same) + \" of \" + std::to_string(views) + \" main views unchanged\");\n"
+                "\t\t\tsame = views = 0;\n\t\t}\n\t}\n#endif\n" + m.group(0)),
+     'vita-viewsame-stat')
+# 212. The main view's BSP walk replayed while the view is bit for bit unchanged (vita/VitaViewReplay.inc, VitaViewReplay.h;
+#      render.cfg view_replay, view_replay_check). Standing still the view does not change (VitaViewSame, #211: 600 of 600).
+edit("Render/BspClipper.h",
+     re.escape("\tvoid VitaSetPointIndex(const int* index) { VitaPointIndex = index; } // vita-pointcache-set (#203)\n"),
+     lambda m: m.group(0) + "\tstd::vector<uint64_t>* VitaFillRecord = nullptr; // vita-fillrecord-field (#212): the solid spans DrawSpan fills, logged\n",
+     'vita-fillrecord-field')
+edit("Render/BspClipper.cpp",
+     re.escape("\tnumDrawSpans++;\n\n#ifdef __vita__ // vita-clipbits-draw\n"),
+     lambda m: ("\tnumDrawSpans++;\n\n#ifdef __vita__ // vita-fillrecord\n\tif (VitaFillRecord)\n\t\tVitaFillRecord->push_back(VitaPackSpan(y, x0, x1));\n#endif\n"
+                "#ifdef __vita__ // vita-clipbits-draw\n"),
+     'vita-fillrecord')
+edit("Render/BspClipper.h",
+     re.escape('#include "VitaClipBits.h" // vita-clipbits-inc\n'),
+     lambda m: m.group(0) + '#include "VitaViewReplay.h" // vita-viewreplay-inc-clip\n',
+     'vita-viewreplay-inc-clip')
+edit("Render/VisibleFrame.h",
+     re.escape("\tArray<PortalSpan> VitaReplayPortal(BspNode* node);\n"),
+     lambda m: m.group(0) + ("\t// vita/VitaViewReplay.inc (#212) vita-viewreplay-members\n"
+                             "\tbool VitaViewWalk();\n\tbool VitaViewNext(uint64_t type, uint64_t& value);\n\tvoid VitaViewRefill();\n"
+                             "\tbool VitaViewReplayBox(BspNode* node);\n\tbool VitaViewReplaySurface(BspNode* node);\n"
+                             "\tArray<PortalSpan> VitaViewReplayPortal(BspNode* node);\n\tvoid VitaViewRecordBox(BspNode* node, bool visible);\n"
+                             "\tbool VitaViewCheckSurface(BspNode* node, const vec3* points, int numverts, bool solid);\n"
+                             "\tArray<PortalSpan> VitaViewCheckPortal(BspNode* node, const vec3* points, uint32_t count);\n"),
+     'vita-viewreplay-members')
+edit("Render/VisibleFrame.cpp",
+     re.escape("#define VITA_CHECKPORTAL(node, points, count) (VitaReplay ? VitaReplayPortal(node) : Clipper.CheckPortal(points, count))\n"),
+     lambda m: "#define VITA_CHECKPORTAL(node, points, count) (VitaReplay ? VitaReplayPortal(node) : VitaViewCheckPortal(node, points, count)) // vita-viewreplay-portal\n",
+     'vita-viewreplay-portal')
+edit("Render/VisibleFrame.cpp",
+     re.escape("\t\tvitaNodeVisible = node->RenderBound == -1 || Clipper.IsAABBVisible(engine->Level->Model->Bounds[node->RenderBound]);\n\t}\n"),
+     lambda m: m.group(0) + "#ifdef __vita__ // vita-viewreplay-box\n\tif (!VitaReplay)\n\t\tVitaViewRecordBox(node, vitaNodeVisible);\n#endif\n",
+     'vita-viewreplay-box')
+edit("Render/VisibleFrame.cpp",
+     re.escape("\t\t\tvitaSurfaceVisible = Clipper.CheckSurface(points, numverts, (PolyFlags & PF_NoOcclude) == 0);\n"),
+     lambda m: "\t\t\tvitaSurfaceVisible = VitaViewCheckSurface(node, points, numverts, (PolyFlags & PF_NoOcclude) == 0); // vita-viewreplay-surface\n",
+     'vita-viewreplay-surface')
+edit("Render/VisibleFrame.cpp",
+     re.escape("\tif (!vitaParallel)\n#endif\n\tProcessNode(&engine->Level->Model->Nodes[0]);\n"),
+     lambda m: "\tif (!vitaParallel && !VitaViewWalk()) // vita-viewreplay-walk\n#endif\n\tProcessNode(&engine->Level->Model->Nodes[0]);\n",
+     'vita-viewreplay-walk')
+edit("Render/VisibleFrame.cpp",
+     re.escape('#include "VitaParallelVis.inc" // vita-pvis-inc\n'),
+     lambda m: m.group(0) + '#include "VitaViewReplay.inc" // vita-viewreplay-incl\n',
+     'vita-viewreplay-incl')
+edit("Render/VisibleBrush.cpp",
+     re.escape("\t\tArray<PortalSpan> spans = frame->Clipper.CheckPortal(points, numverts);\n"),
+     lambda m: ("#ifdef __vita__ // vita-viewreplay-mover: a mover's mirror fills the clipper: a logged walk with one cannot be replayed\n"
+                "\t\tif (vitaViewLog.recording)\n\t\t\tvitaViewLog.spoiled = true;\n"
+                "\t\tif (frame->VitaReplay && vitaReplaySource == 1)\n\t\t\tframe->VitaReplayFailed = true;\n#endif\n" + m.group(0)),
+     'vita-viewreplay-mover')
+edit("Render/BspClipper.h",
+     re.escape("\tstd::vector<uint64_t>* VitaFillRecord = nullptr; // vita-fillrecord-field (#212): the solid spans DrawSpan fills, logged\n"),
+     lambda m: m.group(0) + "\tbool VitaFill(int16_t y, int16_t x0, int16_t x1) { return DrawSpan(y, x0, x1, true); } // vita-fill-public: a logged span filled again\n",
+     'vita-fill-public')
+# 198b. The debug build's bDebugMode must not reach the ini: HPBase.baseConsole's config (bDebugMode) is saved with the console's
+#       config, so a debug session wrote bDebugMode=True into SE-HP.ini and every later build (release too) opened in debug mode.
+#       The value the ini gave is kept at start and put back into the ini before it is written at exit.
+edit("Engine.cpp",
+     re.escape("\t\tconsole->SetBool(\"bDebugMode\", true);\n"),
+     lambda m: "\t\tvitaDebugModeBefore = console->GetBool(\"bDebugMode\") ? 1 : 0; // vita-gamedebug-keep\n" + m.group(0),
+     'vita-gamedebug-keep')
+edit("Engine.cpp",
+     re.escape("#ifdef __vita__ // vita-gamedebug-decl\nbool VitaGameDebug(); // vita_main.cpp\n"),
+     lambda m: m.group(0) + "static int vitaDebugModeBefore = -1; // vita-gamedebug-before: bDebugMode as the ini gave it (-1: the debug build did not set it)\n",
+     'vita-gamedebug-before')
+edit("Engine.cpp",
+     re.escape("#ifdef __vita__ // vita-savepawncfg-exit\n"),
+     lambda m: ("#ifdef __vita__ // vita-gamedebug-restore: the debug build's bDebugMode stays out of the ini\n"
+                "\tif (vitaDebugModeBefore >= 0)\n"
+                "\t\tpackages->SetIniValue(\"system\", \"HPBase.baseConsole\", \"bDebugMode\", vitaDebugModeBefore ? \"True\" : \"False\");\n"
+                "#endif\n" + m.group(0)),
+     'vita-gamedebug-restore')
+# 213. The clipper's corner and vertex projections inline with NEON (vita/VitaMatNeon.h, bit for bit the operator's result;
+#      render.cfg mat_neon, neon_check): mat4::operator*(vec4) was an out-of-line call per node box corner (8 a box).
+edit("Render/BspClipper.cpp",
+     r"\tvec4 verts\[8\] =\n\t\{\n(\t\tWorldToProjection \* vec4\(bbox[^\n]*\n)+\t\};\n",
+     lambda m: ("#ifdef __vita__ // vita-boxneon\n\tvec4 verts[8] =\n\t{\n"
+                "\t\tVitaMulPoint(WorldToProjection, bbox.min.x, bbox.min.y, bbox.min.z),\n"
+                "\t\tVitaMulPoint(WorldToProjection, bbox.max.x, bbox.min.y, bbox.min.z),\n"
+                "\t\tVitaMulPoint(WorldToProjection, bbox.min.x, bbox.max.y, bbox.min.z),\n"
+                "\t\tVitaMulPoint(WorldToProjection, bbox.max.x, bbox.max.y, bbox.min.z),\n"
+                "\t\tVitaMulPoint(WorldToProjection, bbox.min.x, bbox.min.y, bbox.max.z),\n"
+                "\t\tVitaMulPoint(WorldToProjection, bbox.max.x, bbox.min.y, bbox.max.z),\n"
+                "\t\tVitaMulPoint(WorldToProjection, bbox.min.x, bbox.max.y, bbox.max.z),\n"
+                "\t\tVitaMulPoint(WorldToProjection, bbox.max.x, bbox.max.y, bbox.max.z)\n"
+                "\t};\n#else\n" + m.group(0) + "#endif\n"),
+     'vita-boxneon')
+# 214. Settings kept when the app is closed from the LiveArea (the PS button, then close: the process is killed, Engine::Run's
+#      end never comes). The ini files were written to the card only there, and the audio device / client options (the menu's
+#      'set ini:Engine.Engine.AudioDevice SoundVolume', Brightness) only reached the ini at all when SE-HP.ini was missing.
+#      Every 2 s the player's, the audio device's and the client's options go into the ini in memory (SetValue marks a file only
+#      when a value really changed) and a changed file is written at once (#215 writes it safely).
+edit("Package/PackageManager.h",
+     re.escape("\tbool MissingSESystemIni() const { return missing_se_system_ini; }\n"),
+     lambda m: m.group(0) + ("#ifdef __vita__ // vita-inimodified\n"
+                             "\tbool VitaAnyIniModified() const { for (auto& ini : iniFiles) if (ini.second->IsModified()) return true; return false; }\n"
+                             "#endif\n"),
+     'vita-inimodified')
+edit("Engine.cpp",
+     re.escape("\t\t\tSaveGameInfo.SaveGameDescription.clear();\n\t\t}\n"),
+     lambda m: m.group(0) + (
+         "#ifdef __vita__ // vita-cfgautosave\n"
+         "\t\t{\n"
+         "\t\t\tstatic auto vitaNextConfigCheck = std::chrono::steady_clock::now() + std::chrono::seconds(2);\n"
+         "\t\t\tauto vitaNow = std::chrono::steady_clock::now();\n"
+         "\t\t\tif (vitaNow >= vitaNextConfigCheck)\n\t\t\t{\n"
+         "\t\t\t\tvitaNextConfigCheck = vitaNow + std::chrono::seconds(2);\n"
+         "\t\t\t\tif (LaunchInfo.IsKnowWonder() && Level && viewport && viewport->Actor())\n"
+         "\t\t\t\t\tviewport->Actor()->SaveConfig();\n"
+         "\t\t\t\tclient->SaveConfig();\n"
+         "\t\t\t\taudiodev->SaveConfig();\n"
+         "\t\t\t\tif (vitaDebugModeBefore >= 0)\n"
+         "\t\t\t\t\tpackages->SetIniValue(\"system\", \"HPBase.baseConsole\", \"bDebugMode\", vitaDebugModeBefore ? \"True\" : \"False\");\n"
+         "\t\t\t\tif (packages->VitaAnyIniModified())\n\t\t\t\t{\n"
+         "\t\t\t\t\tpackages->SaveAllIniFiles();\n"
+         "\t\t\t\t\tLogMessage(\"Settings written to the card (\" + std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - vitaNow).count()) + \" ms)\");\n"
+         "\t\t\t\t}\n\t\t\t}\n\t\t}\n#endif\n"),
+     'vita-cfgautosave')
+# 215. An ini is written whole to <name>.new and then put in place: the app closed in the middle of the write left a cut ini
+#      (every setting lost). vita_main.cpp takes a .new left behind when the ini itself is missing.
+edit("Utils/File.cpp",
+     re.escape("void File::write_all_text(const std::string& filename, const std::string& text)\n{\n"),
+     lambda m: m.group(0) + (
+         "#ifdef __vita__ // vita-atomicini\n"
+         "\tif (filename.size() > 4 && filename.compare(filename.size() - 4, 4, \".ini\") == 0)\n\t{\n"
+         "\t\tconst std::string temp = filename + \".new\";\n"
+         "\t\tFILE* handle = fopen(temp.c_str(), \"wb\");\n"
+         "\t\tif (handle == nullptr)\n\t\t\tException::Throw(\"Could not create \" + temp);\n"
+         "\t\tbool written = fwrite(text.data(), 1, text.size(), handle) == text.size();\n"
+         "\t\twritten = fclose(handle) == 0 && written;\n"
+         "\t\tif (!written)\n\t\t{\n\t\t\tstd::remove(temp.c_str());\n\t\t\tException::Throw(\"Could not write \" + temp);\n\t\t}\n"
+         "\t\tstd::remove(filename.c_str());   // the Vita's rename does not replace a file\n"
+         "\t\tif (std::rename(temp.c_str(), filename.c_str()) != 0)\n\t\t\tException::Throw(\"Could not rename \" + temp);\n"
+         "\t\treturn;\n\t}\n#endif\n"),
+     'vita-atomicini')
+# 216. SurrealEngine bug: IniKey::SetIndexed answered 1 ('changed') when the flag stayed the same, so every SetValue marked its
+#      ini as modified: #214 wrote SE-HP.ini / SE-User.ini every 2 s (~135 ms each, a visible hitch). 1 only when it changed.
+edit("Package/IniFile.cpp",
+     re.escape("\tbool result = !((int)indexed ^ (int)newIndexed);\n"),
+     lambda m: "\tbool result = indexed != newIndexed; // vita-setindexed-fix\n",
+     'vita-setindexed-fix')
+# 217. The Vita's input (vita_input.cpp) needs to know when a menu is up: HP1's console shows the UWindow mouse
+#      (Viewport.bShowWindowsMouse) in the title and pause menus, but bWindowsMouseAvailable is false on the Vita, so the cursor
+#      stays 'locked' there and CursorLocked can't tell a menu from the game (the menu touch never ran). The flag goes over as it is.
+edit("Engine.cpp",
+     re.escape("\t\tif (viewport->bShowWindowsMouse() && viewport->bWindowsMouseAvailable())\n\t\t\twindow->UnlockCursor();\n\t\telse\n\t\t\twindow->LockCursor();\n\t}\n"),
+     lambda m: m.group(0) + "#ifdef __vita__ // vita-menumouse-set\n\tVitaMenuMouse = viewport && viewport->bShowWindowsMouse();\n#endif\n",
+     'vita-menumouse-set')
+edit("Engine.cpp",
+     re.escape("#ifdef __vita__ // vita-gamedebug-decl\nbool VitaGameDebug(); // vita_main.cpp\n"),
+     lambda m: m.group(0) + "extern bool VitaMenuMouse; // vita-menumouse-decl: vita_input.cpp\n",
+     'vita-menumouse-decl')
 PY

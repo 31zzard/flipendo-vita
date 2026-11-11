@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
+#include <cstdlib>
 #include <malloc.h>
 
 inline int VitaConfigInt(const char* wanted, int defaultValue)
@@ -29,6 +30,11 @@ inline int VitaConfigInt(const char* wanted, int defaultValue)
 		}
 		fclose(file);
 	}
+	// RCFG_<name>=<value> in the environment (env.txt of an automated run) wins over render.cfg: A/B runs without touching it
+	char envName[80];
+	snprintf(envName, sizeof(envName), "RCFG_%s", wanted);
+	if (const char* env = getenv(envName))
+		result = atoi(env);
 	return result;
 }
 
@@ -39,6 +45,13 @@ inline float VitaMeshDistance()
 	return distance;
 }
 
+// clipper_bits in render.cfg (#208): the clipper's screen as one bit a pixel (VitaClipBits.h). Read once (a BspClipper is made for
+// every sky / mirror frame of every frame: reading render.cfg there cost ~4.5 ms a frame in Lev_Tut3)
+inline bool VitaClipperBits()
+{
+	static const bool on = VitaConfigInt("clipper_bits", 1) != 0;
+	return on;
+}
 // clipper_scale in render.cfg: the size of the visibility clipper's virtual screen, in percent of 2048x1080. The clipper
 // (BspClipper) rasterizes every wall of the level in software to find out what hides what: at 100 it works on four times
 // the pixels the Vita's screen has. 50 = 1024x540, about the screen's own size. 25 is faster still, and may drop thin walls.
@@ -97,6 +110,8 @@ inline bool VitaClipperPolygons() { static const bool on = VitaConfigInt("clippe
 inline bool VitaMeshFast() { static const bool on = VitaConfigInt("mesh_fast", 1) != 0; return on; }
 // face_threads: a big skeletal mesh's face loop in three parts on the mesh job threads (apply_fixes #96)
 inline bool VitaFaceThreads() { static const bool on = VitaConfigInt("face_threads", 1) != 0; return on; }
+// face_threads_min: a mesh needs at least this many faces for its face loop on three cores (smaller ones: the overhead wins)
+inline size_t VitaFaceThreadsMin() { static const size_t n = (size_t)std::max(VitaConfigInt("face_threads_min", 192), 16); return n; }
 // tick_static=0: like HP1's ULevel::Tick, bStatic actors are not ticked (only through an owned actor). 1 = every actor, as SurrealEngine
 inline bool VitaTickStatic() { static const bool on = VitaConfigInt("tick_static", 0) != 0; return on; }
 // mesh_lod=1: skeletal meshes are drawn at the detail HP1's URender::DrawLodMesh picks (screen size, LODBias, LODStrength, and
@@ -119,6 +134,7 @@ inline bool VitaDynamicLightList() { return false; }
 inline bool VitaClipperPolygons() { return false; }
 inline bool VitaMeshFast() { return false; }
 inline bool VitaFaceThreads() { return false; }
+inline size_t VitaFaceThreadsMin() { return 192; }
 inline bool VitaTickStatic() { return true; }
 inline bool VitaMeshLod() { return false; }
 inline bool VitaLightmapSkip() { return false; }

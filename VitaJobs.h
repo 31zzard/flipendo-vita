@@ -23,6 +23,7 @@ namespace VitaJobs
 		Fn fn = nullptr;
 		void* context = nullptr;
 		std::atomic<int> count{ 0 };
+		std::atomic<int> published{ 0 };   // indices below this are ready (a streamed run publishes them one by one)
 		std::atomic<int> next{ 0 };
 		std::atomic<int> done{ 0 };
 		std::atomic<int> inside{ 0 };   // workers between taking their first index and giving up
@@ -37,9 +38,12 @@ namespace VitaJobs
 	{
 		for (;;)
 		{
-			const int i = shared.next.fetch_add(1);
-			if (i >= shared.count.load())
+			// an index is taken only once it is published (a streamed run: the rest come later, with a wake-up)
+			int i = shared.next.load();
+			if (i >= shared.published.load())
 				break;
+			if (!shared.next.compare_exchange_weak(i, i + 1))
+				continue;
 			shared.fn(shared.context, i);
 			shared.done.fetch_add(1);
 		}
@@ -67,7 +71,7 @@ namespace VitaJobs
 		const int cores[Workers] = { SCE_KERNEL_CPU_MASK_USER_1, SCE_KERNEL_CPU_MASK_USER_2 };
 		for (int i = 0; i < Workers; i++)
 		{
-			semaphores[i] = sceKernelCreateSema("meshjobs", 0, 0, Workers * 4, nullptr);
+			semaphores[i] = sceKernelCreateSema("meshjobs", 0, 0, 1024, nullptr);
 			SceUID thread = semaphores[i] >= 0 ? sceKernelCreateThread("meshjobs", WorkerMain, priority, 64 * 1024, 0, cores[i], nullptr) : -1;
 			int id = i;
 			if (thread < 0 || sceKernelStartThread(thread, sizeof(id), &id) < 0)
@@ -80,17 +84,24 @@ namespace VitaJobs
 		return true;
 	}
 
-	inline void Run(Fn fn, void* context, int count)
-	{
-		if (count <= 0)
-			return;
-		if (Mode() < 2 || count == 1 || !Start())
-		{
-			for (int i = 0; i < count; i++)
-				fn(context, i);
-			return;
-		}
+	// An asynchronous run (BeginAsync): the workers start on it while the calling thread does other work; FinishAsync joins
+	// in and waits. Run finishes a pending one first (one run at a time).
+	inline bool asyncActive = false;
+	inline int asyncCount = 0;
 
+	inline void FinishAsync()
+	{
+		if (!asyncActive)
+			return;
+		Work();
+		while (shared.done.load() < asyncCount)
+		{
+		}
+		asyncActive = false;
+	}
+
+	inline void Launch(Fn fn, void* context, int count)
+	{
 		// A worker woken late by the last run must not take an index of this one: while the run is set up, every index it
 		// could get is past any count. Then wait for the workers still in the last run's Work().
 		shared.next.store(1 << 30);
@@ -101,9 +112,61 @@ namespace VitaJobs
 		shared.context = context;
 		shared.done.store(0);
 		shared.count.store(count);
+		shared.published.store(count);
 		shared.next.store(0);
+		if (count > 0)
+			for (int i = 0; i < Workers; i++)
+				sceKernelSignalSema(semaphores[i], 1);
+	}
+
+	// false: not started (no workers): the caller runs the jobs itself. A single job runs on a worker.
+	inline bool BeginAsync(Fn fn, void* context, int count)
+	{
+		FinishAsync();
+		if (count <= 0 || Mode() < 2 || !Start())
+			return false;
+		Launch(fn, context, count);
+		asyncActive = true;
+		asyncCount = count;
+		return true;
+	}
+
+	// A streamed asynchronous run (#186): the jobs are handed over one by one as the calling thread finishes setting them up
+	// (Publish(n): jobs 0..n-1 are ready; their data must not move after that), FinishAsync joins as for BeginAsync. false:
+	// not started (no workers): the caller runs the jobs itself.
+	inline bool BeginStream(Fn fn, void* context)
+	{
+		FinishAsync();
+		if (Mode() < 2 || !Start())
+			return false;
+		Launch(fn, context, 0);
+		asyncActive = true;
+		asyncCount = 0;
+		return true;
+	}
+
+	inline void Publish(int count)
+	{
+		shared.count.store(count);
+		shared.published.store(count);
+		asyncCount = count;
 		for (int i = 0; i < Workers; i++)
 			sceKernelSignalSema(semaphores[i], 1);
+	}
+
+	inline void Run(Fn fn, void* context, int count)
+	{
+		FinishAsync();
+		if (count <= 0)
+			return;
+		if (Mode() < 2 || count == 1 || !Start())
+		{
+			for (int i = 0; i < count; i++)
+				fn(context, i);
+			return;
+		}
+
+		Launch(fn, context, count);
 		Work();
 		while (shared.done.load() < count)
 		{

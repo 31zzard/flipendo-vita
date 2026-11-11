@@ -1,0 +1,10 @@
+# hp2_willow save: the in-game menu (Escape) opened; the host moves the real right stick (vitacompanion 'press right-stick X Y')
+# after the first picture; pictures at 44, 70, 76 s: does the wand cursor follow?
+timeout=260
+stall=90
+arg=--saveslot=5
+arg=--loadgame=0
+env=HP1_KEYS=30:Enter:0.2,40:Escape:0.2
+env=HP1_SHOT_DIR=ux0:data/flipendo2
+env=HP1_SHOTS=44,70,76
+env=HP1_EXEC=82:exit

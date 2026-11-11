@@ -9,6 +9,9 @@
 #ifdef __vita__
 #include <algorithm>
 #include <cfloat>
+#include "VitaProbes.h"
+#include "VitaMatNeon.h"
+#include "Utils/Logger.h"
 
 bool BspClipper::VitaCheckPolygon(const vec3* vertices, uint32_t count, bool solid)
 {
@@ -19,6 +22,7 @@ bool BspClipper::VitaCheckPolygon(const vec3* vertices, uint32_t count, bool sol
 	};
 	enum { MaxVertices = 48 };
 	ClipVertex bufferA[MaxVertices], bufferB[MaxVertices];
+	VITA_LAP_START;
 
 	int n = (int)count;
 	if (VitaStrip)
@@ -37,10 +41,46 @@ bool BspClipper::VitaCheckPolygon(const vec3* vertices, uint32_t count, bool sol
 			return false;
 		}
 	}
+	// #203: a corner projected earlier in this view (the same model point) is taken as it was kept
+	static const bool pointCache = VitaConfigInt("point_cache", 0) != 0;   // off: SLOWER on the Vita (memory misses cost more than the 16 multiplies)
+	static const bool pointCheck = VitaConfigInt("point_cache_check", 0) != 0;
+	const int* pointIndex = pointCache ? VitaPointIndex : nullptr;
 	for (int i = 0; i < n; i++)
 	{
-		bufferA[i].position = WorldToProjection * vec4(vertices[i], 1.0f);
+		const int p = pointIndex ? pointIndex[i] : -1;
+		if (p >= 0 && (size_t)p < VitaPointStamp.size() && VitaPointStamp[p] == VitaPointGen)
+		{
+			bufferA[i].position = VitaPointPos[p];
+			bufferA[i].clipDistance = VitaPointDist[p];
+			if (pointCheck)
+			{
+				static unsigned checked = 0, wrong = 0;
+				const vec4 pos = WorldToProjection * vec4(vertices[i], 1.0f);
+				const float dist = dot(PortalPlane, vec4(vertices[i], 1.0f));
+				checked++;
+				const bool same = std::memcmp(&pos, &VitaPointPos[p], sizeof(vec4)) == 0 && std::memcmp(&dist, &VitaPointDist[p], sizeof(float)) == 0;
+				if (!same)
+					wrong++;
+				if (checked % 200000 == 0 || (!same && wrong <= 5))
+					LogMessage("VitaPointCache: " + std::to_string(checked) + " kept corners computed again, " + std::to_string(wrong) + " differ");
+			}
+			continue;
+		}
+		bufferA[i].position = VitaMulPoint(WorldToProjection, vertices[i].x, vertices[i].y, vertices[i].z);   // #213
 		bufferA[i].clipDistance = dot(PortalPlane, vec4(vertices[i], 1.0f));
+		if (p >= 0)
+		{
+			if ((size_t)p >= VitaPointStamp.size())
+			{
+				const size_t size = (size_t)p + 1 + 1024;
+				VitaPointStamp.resize(size, 0u);
+				VitaPointPos.resize(size);
+				VitaPointDist.resize(size);
+			}
+			VitaPointPos[p] = bufferA[i].position;
+			VitaPointDist[p] = bufferA[i].clipDistance;
+			VitaPointStamp[p] = VitaPointGen;
+		}
 	}
 	numTris += n - 2;   // as many as the fan would have had, so the log stays comparable
 
@@ -97,6 +137,7 @@ bool BspClipper::VitaCheckPolygon(const vec3* vertices, uint32_t count, bool sol
 			return false;
 	}
 
+	VITA_LAP(ClipProject);
 	// To the clipper's screen
 	const float halfWidth = ViewportWidth * 0.5f;
 	const float halfHeight = ViewportHeight * 0.5f;
@@ -123,6 +164,22 @@ bool BspClipper::VitaCheckPolygon(const vec3* vertices, uint32_t count, bool sol
 	const int bottom = std::min((int)(maxY + 0.5f), ViewportHeight);
 	if (top >= bottom)
 		return false;
+
+	bool vitaClaimedHidden = false;
+	// #190: a polygon whose screen box (a pixel wider each side than any span it could make) meets no open gap on its lines
+	// is not visible and closes nothing (DrawSpan finds no gap to fill): answered without its edges and spans
+	{
+		const int16_t boxLeft = (int16_t)std::clamp((int)std::floor(minX + 0.5f) - 1, 0, ViewportWidth);
+		const int16_t boxRight = (int16_t)std::clamp((int)(maxX + 0.5f) + 2, 0, ViewportWidth);
+		bool open = false;
+		if (boxLeft < boxRight)
+			for (int y = top; y < bottom && !open; y++)
+				open = IsVisible((int16_t)y, boxLeft, boxRight);
+		static const bool check = VitaConfigInt("clip_check", 0) != 0;   // clip_check=1: the full way too, it must find nothing
+		if (!open && !check)
+			return false;
+		vitaClaimedHidden = !open;
+	}
 
 	if ((int)VitaLineMin.size() < ViewportHeight)
 	{
@@ -163,6 +220,7 @@ bool BspClipper::VitaCheckPolygon(const vec3* vertices, uint32_t count, bool sol
 		}
 	}
 
+	VITA_LAP(ClipEdges);
 	const int16_t clipRight = (int16_t)ViewportWidth;
 	const int16_t keepLeft = (int16_t)std::min(VitaKeepX0, ViewportWidth);    // a strip's open columns (else 0..width)
 	const int16_t keepRight = (int16_t)std::min(VitaKeepX1, ViewportWidth);
@@ -175,6 +233,16 @@ bool BspClipper::VitaCheckPolygon(const vec3* vertices, uint32_t count, bool sol
 		const int16_t x1 = std::clamp((int16_t)lineMax[y], (int16_t)0, keepRight);
 		if (x0 < x1)
 			result |= DrawSpan((int16_t)y, x0, x1, solid);
+	}
+	VITA_LAP(ClipSpans);
+	if (vitaClaimedHidden)
+	{
+		static unsigned checked = 0, wrong = 0;
+		checked++;
+		if (result)
+			wrong++;
+		if (checked % 20000 == 0 || (result && wrong < 10))
+			LogMessage("VitaClipCheck: " + std::to_string(checked) + " polygons answered hidden early, " + std::to_string(wrong) + " were visible");
 	}
 	return result;
 }

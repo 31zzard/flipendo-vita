@@ -1,0 +1,10 @@
+# Lev2_Fire1: Harry walks forward 3 s from 60 s, screenshot at 62 s (his shadow while he moves): shadow_native A/B
+timeout=200
+arg=--level=Lev2_Fire1
+arg=--slot=5
+env=HP1_GOD=1
+env=HP1_SKIPCUTS=1
+env=HP1_KEYS=60:Up:3
+env=HP1_SHOT_DIR=ux0:data/flipendo
+env=HP1_SHOTS=62
+env=HP1_EXEC=64:exit

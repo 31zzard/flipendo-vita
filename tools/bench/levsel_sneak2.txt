@@ -1,0 +1,7 @@
+# Debug build: the title menu's level select way (FEBook.RunURL) into Lev4_Sneak2, fresh; 25 s standing at the start; probes
+timeout=260
+stall=60
+env=VITA_BENCH=1
+env=RCFG_probes=1
+env=RCFG_section_timers=1
+env=HP1_EXEC=12:@console.MenuBook RunURL Lev4_Sneak2;60:@get harry0 Location;85:exit

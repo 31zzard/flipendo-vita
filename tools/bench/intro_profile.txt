@@ -1,0 +1,8 @@
+# The profiling build (slow on purpose) in Lev3_Intro (Great Hall, students): standing to 260 s; profile.txt every 25 s
+timeout=1000
+arg=--level=Lev3_Intro
+arg=--slot=5
+env=HP1_GOD=1
+env=HP1_SKIPCUTS=1
+env=HP1_EXEC=260:exit
+stall=150

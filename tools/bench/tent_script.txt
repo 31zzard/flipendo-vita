@@ -1,0 +1,8 @@
+# VenomousTent2 / PotCam scripts in Lev2_HogFront
+timeout=200
+stall=50
+arg=--level=Lev2_HogFront
+arg=--slot=5
+env=HP1_GOD=1
+env=HP1_SKIPCUTS=1
+env=HP1_EXEC=50:@script VenomousTent2 impartInformation;50:@script PotCam Tick;50:@script PotCam UpdatePosition;52:exit

@@ -33,7 +33,7 @@ HP2 = os.environ.get("VITA_APP", "") == "hp2"
 TITLE_ID = "FLPD00002" if HP2 else "FLPD00001"
 DATA = "ux0:data/flipendo2" if HP2 else "ux0:data/flipendo"
 SELF = (os.path.join(os.path.dirname(os.path.dirname(VITA_DIR)), "flipendo2", "build", "flipendo2.self") if HP2
-        else os.path.join(VITA_DIR, "build", "flipendo.self"))
+        else os.path.join(VITA_DIR, os.environ.get("VITA_BUILD", "build"), "flipendo.self"))   # VITA_BUILD=build-profile: the profiling build
 LOGS = os.path.join(os.path.dirname(VITA_DIR), "logs")
 STALL = 60   # seconds without the log growing that end a run (scenario 'stall=')
 
@@ -119,11 +119,21 @@ def put_file(local, remote):
     f.quit()
 
 
-def get_file(remote, local):
-    f = ftp()
-    with open(local, "wb") as fh:
-        f.retrbinary("RETR /" + remote, fh.write, blocksize=256 * 1024)
-    f.quit()
+def get_file(remote, local, tries=5):
+    # vitacompanion's FTP sometimes ends a transfer early (a 0-byte log of 382 KB on 07 Nov): fetched again until
+    # the local size matches the remote one
+    for attempt in range(tries):
+        f = ftp()
+        with open(local, "wb") as fh:
+            f.retrbinary("RETR /" + remote, fh.write, blocksize=256 * 1024)
+        f.quit()
+        want = size(remote)
+        got = os.path.getsize(local)
+        if want is None or got == want:
+            return
+        print("  fetched %d of %d bytes of %s, again" % (got, want, remote))
+        time.sleep(2)
+    print("  WARNING: %s still incomplete after %d tries" % (remote, tries))
 
 
 def size(remote):
@@ -137,6 +147,22 @@ def size(remote):
         return None
 
 
+def tail(remote, start):
+    """the bytes of a remote file from offset start on (FTP REST), or b'' when it cannot be read"""
+    try:
+        f = ftp()
+        f.voidcmd("TYPE I")
+        out = io.BytesIO()
+        f.retrbinary("RETR /" + remote, out.write, rest=max(0, start))
+        f.quit()
+        return out.getvalue()
+    except Exception:
+        return b""
+
+
+ENDED = (b"Audio device has been shut down", b"FATAL")   # the last line of a clean exit; an engine exception
+
+
 def delete(remote):
     try:
         f = ftp()
@@ -146,13 +172,30 @@ def delete(remote):
         pass
 
 
+STAMP = os.path.join(HERE, ".deployed_" + TITLE_ID)   # which build is on the Vita (path, size, mtime)
+
+
+def build_stamp():
+    st = os.stat(SELF)
+    return "%s %d %d" % (SELF, st.st_size, int(st.st_mtime))
+
+
 def deploy():
     local = SELF
     cmd("quit " + TITLE_ID)
     time.sleep(2)
     t = time.time()
     put_file(local, f"ux0:app/{TITLE_ID}/eboot.bin")
+    open(STAMP, "w").write(build_stamp())
     print("eboot.bin uploaded: %.1f MB in %.1f s" % (os.path.getsize(local) / 1e6, time.time() - t))
+
+
+def deployed():
+    """True when the Vita has the build in SELF (deployed by this tool since it was built)"""
+    try:
+        return open(STAMP).read() == build_stamp()
+    except OSError:
+        return False
 
 
 def read_scenario(name):
@@ -177,6 +220,9 @@ def read_scenario(name):
 
 def run(name, do_deploy=False):
     scenario, timeout, args, env = read_scenario(name)
+    if not do_deploy and not deployed() and os.environ.get("VITA_NO_DEPLOY") != "1":
+        print("the Vita does not have the build in", SELF, "(rebuilt since the last deploy): deploying it")
+        do_deploy = True
     if do_deploy:
         deploy()
     else:
@@ -193,7 +239,7 @@ def run(name, do_deploy=False):
     lost = False
     try:
         while time.time() - start < timeout:
-            time.sleep(5)
+            time.sleep(3)
             n = size(f"{DATA}/flipendo.log")
             if n is None and not port_open(vita_ip(), 1338, 2.0):
                 if time.time() - last_seen > 60:
@@ -204,8 +250,11 @@ def run(name, do_deploy=False):
                 last_seen = time.time()
             if n != last_size:
                 last_size, last_change = n, time.time()
-            elif n and time.time() - last_change > STALL and time.time() - start > 40:
+            elif n is not None and time.time() - last_change > STALL and time.time() - start > 40:
                 break   # the game is gone (exit) or hangs: the log has stopped growing
+            elif n and any(e in tail(f"{DATA}/flipendo.log", n - 2048) for e in ENDED):
+                print("  %3.0f s: the game has ended (log %s bytes)" % (time.time() - start, n), flush=True)
+                break   # exit or FATAL at the end of the log: no need to wait STALL seconds
             print("  %3.0f s: log %s bytes" % (time.time() - start, n), flush=True)
     finally:
         try:

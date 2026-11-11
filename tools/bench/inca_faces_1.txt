@@ -1,0 +1,11 @@
+# Lev2_Inc_A: screenshots at 60 s (standing) and 70 s (after turning): prepass_faces A/B
+timeout=200
+arg=--level=Lev2_Inc_A
+arg=--slot=5
+env=HP1_GOD=1
+env=HP1_SKIPCUTS=1
+env=HP1_MOUSE=62:60:0:6
+env=HP1_SHOT_DIR=ux0:data/flipendo
+env=HP1_SHOTS=60,70
+env=HP1_EXEC=72:exit
+env=RCFG_prepass_faces=1

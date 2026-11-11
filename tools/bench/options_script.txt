@@ -1,0 +1,8 @@
+# FEOptionsPage's scripts (the mouse sensitivity slider)
+timeout=150
+stall=40
+arg=--level=Lev_Tut1
+arg=--slot=5
+env=HP1_GOD=1
+env=HP1_SKIPCUTS=1
+env=HP1_EXEC=30:@script HPMenu.FEOptionsPage SaveConfigs;30:@script HPMenu.HPConsole CloseUWindow;30:@script UWindow.UWindowRootWindow Close;30:@script HPMenu.FEBook SaveConfigs;32:exit

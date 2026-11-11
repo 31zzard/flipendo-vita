@@ -1,0 +1,8 @@
+# Profiling build (VITA_BUILD=build-profile): Lev2_HogFront standing, long, for profile.txt
+timeout=500
+stall=80
+arg=--level=Lev2_HogFront
+arg=--slot=5
+env=HP1_GOD=1
+env=HP1_SKIPCUTS=1
+env=HP1_EXEC=300:exit

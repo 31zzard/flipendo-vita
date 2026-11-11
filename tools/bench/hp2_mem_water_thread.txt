@@ -1,0 +1,10 @@
+# hp2_willow: 100 s of turning the camera slowly, to see whether the heap keeps growing (log lines 'memory: heap' every 120 frames)
+timeout=300
+stall=90
+arg=--saveslot=5
+arg=--loadgame=0
+env=VITA_BENCH=1
+env=RCFG_water_thread=0
+env=HP1_KEYS=30:Enter:0.2
+env=HP1_MOUSE=40:25:0:60
+env=HP1_EXEC=40:@get harry Location;105:exit

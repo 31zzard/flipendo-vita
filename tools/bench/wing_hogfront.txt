@@ -1,0 +1,13 @@
+# Lev2_HogFront: Harry put in front of WingardiumBlock0 facing it, Wingardium cast (left mouse 2 s), the block levitated; probes
+timeout=260
+stall=50
+arg=--level=Lev2_HogFront
+arg=--slot=5
+env=VITA_BENCH=1
+env=RCFG_probes=1
+env=RCFG_section_timers=1
+env=RCFG_slow_frame_ms=80
+env=HP1_GOD=1
+env=HP1_SKIPCUTS=1
+env=HP1_KEYS=62:01:4
+env=HP1_EXEC=50:@teleport -1485 5129 60;54:@get harry0 Location;62:@get harry0 Rotation;66:@get WingardiumBlock0 Location;72:@get WingardiumBlock0 Location;80:@get WingardiumBlock0 Location;88:exit

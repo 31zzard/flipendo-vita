@@ -1,0 +1,10 @@
+# Chamber of Secrets (VITA_APP=hp2): a new game in slot 6 (no front end), Space during PrivetDr's intro cutscene; pictures
+# before and after
+timeout=200
+stall=90
+arg=--saveslot=6
+arg=--url=PrivetDr.unr
+env=HP1_SHOT_DIR=ux0:data/flipendo2
+env=HP1_SHOTS=24,30,40
+env=HP1_KEYS=26:Space:0.3
+env=HP1_EXEC=45:exit

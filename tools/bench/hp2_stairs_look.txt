@@ -1,0 +1,10 @@
+# Chamber of Secrets: Grandstaircase_hub (a new game in slot 6, story state GSTATE050 set and the map entered again).
+# Pictures to choose a bench spot; no timing.
+timeout=300
+stall=120
+arg=--saveslot=6
+arg=--url=Grandstaircase_hub.unr
+env=HP1_KEYS=20:Enter:0.2,24:Enter:0.2,50:Enter:0.2,54:Enter:0.2,58:Enter:0.2
+env=HP1_EXEC=8:@set Harry0 CurrentGameState GSTATE050;9:@travel Grandstaircase_hub;62:@get Harry0 Location;62.2:@get Harry0 Rotation;70:exit
+env=HP1_SHOT_DIR=ux0:data/flipendo2
+env=HP1_SHOTS=45,64

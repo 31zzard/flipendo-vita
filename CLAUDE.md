@@ -6,6 +6,10 @@ WSL2 on Windows, VitaSDK in /usr/local/vitasdk, Vita hacked (h-encore).
 The game runs: menus, all of levels 1-3, saves, sound, lighting like the original. The problem is SPEED (13-25 fps, want 30) and
 memory (192 MB heap). Testing on the console is manual: you build, the user installs the VPK, plays and sends logs back.
 
+## HP2 split off (2026-11-08)
+Chamber of Secrets now builds from its own copy ~/flipendo2/flipendo (taken at #213, user's decision: HP2 work must not risk HP1).
+This tree is HP1's only; the flipendo2 app no longer uses it.
+
 ## Rules
 - Never change the SurrealEngine submodule history or push it (upstream forbids AI contributions). Engine/Flipendo sources are
   changed ONLY by `vita/apply_fixes.sh` (idempotent python edits, each guarded by a marker text; backups `.orig`).
@@ -27,6 +31,10 @@ memory (192 MB heap). Testing on the console is manual: you build, the user inst
 
 ## Build / install
 - `cd ~/flipendo/vita && bash build.sh` (apply_fixes + touch + cmake + make; prints errors only; result `build/flipendo.vpk` + sha256).
+  `bash build.sh debug`: HP1's own debug mode on (HPConsole.bDebugMode, #198: the title menu's Level Select, Language, Credits,
+  Version; 'Debug' top left), for working on the game; `bash build.sh release`: off, THE BUILD TO PUBLISH. Same folder build/
+  (cmake VITA_GAME_DEBUG, only vita_main.cpp changes); plain `bash build.sh` keeps the last mode, the output's end says which.
+  render.cfg game_debug=0/1 overrides either. The user asked (08 Nov) for debug builds while working, release when publishing.
   `bash build.sh profile` -> `build-profile/` (sampling profiler, game is slow on purpose).
 - cmake options: `VITA_HEAP_MB` (192; build/ is at 256 with VITA_EXTRA_MEMORY=ON since 2026-10-24), `VITA_TEXT_PAD_BYTES` (28672, raised to 45056 on 2026-10-22 and 61440 on 2026-10-23; only stubs.cpp rebuilds), `VITA_TUNE_FLAGS` (-mtune=cortex-a9 -fno-math-errno),
   `VITA_AGGRESSIVE` (-O3 -marm), `VITA_PROFILE`, `VITA_EXTRA_MEMORY` (experimental, unverified).
@@ -45,7 +53,9 @@ resolve_profile.py, tools/psp2core.py (crash dump reader), render.cfg (template)
 or on the glsubmit thread), tests/pcstub/ (PC stand-ins: vitaGL that records calls and triangles, psp2 threads on std::thread, Widget),
 tests/glqueuetest.cpp, tests/surfacecachetest.cpp and tests/stripvistest.cpp (the compile lines are at their top),
 VitaParallelVis.inc (the visibility walk on three cores, included by VisibleFrame.cpp), VitaSpellLesson.cpp (spell lessons:
-touch and stick rails), sce_sys/ (bubble icon and LiveArea, made by tools/make_livearea.py).
+touch and stick rails), sce_sys/ (bubble icon and LiveArea: tools/make_livearea_cover.ps1 draws them from images/branding/coverhq.jpg (bg + watermark),
+GamePlayButton.jpg (gate) and icon.png (bubble) in
+Windows PowerShell, tools/make_livearea.py --from <folder> turns them into palette PNGs; without --from it makes the old Flipendo-logo set).
 
 ## On the Vita: ux0:data/flipendo/
 hp1/ (HP1 files; the old game/ is still used when there is no hp1/), fonts/NotoSans-Regular.ttf, resources/, render.cfg, flipendo.log (the engine log), vita-main.log
@@ -55,7 +65,8 @@ free_lightmap_data world meshes particles(percent) mesh_distance clipper_scale(p
 flush_to_zero tick_far_distance tick_far_rate bspinfo_cache texture_fps slow_frame_ms device_timing light_anim_divider
 trace_cache mover_trace surface_batching atlas_pages atlas_direct still_lights lightmap_incremental dynamic_light_list tick_far_visible skin_cache skin_cache_age mesh_light_max section_timers vsync mipmaps upload_budget_ms texture_inplace heartbeat probes
 gl_thread gl_thread_core gl_thread_priority surface_cache surface_chunks parallel_vis(0 default/1/2=auto; was vis_threads) lightmap_skip shadow_skip spell_touch spell_assist
-spell_speed spell_time.
+spell_speed spell_time water_thread water_thread_priority water_thread_cores entry_tick_rate camera_speed menu_touch debug_mode fps_counter. Any key can be overridden for one
+automated run by RCFG_<key>=<n> in the scenario's env (VitaConfig.h).
 Graphics audit with findings and ideas not done: /GRAPHICS_AUDIT.md (next to this file).
 vita/render_turbo.cfg is the lowest-quality preset (lightmap=0 etc.); render.cfg is the balanced one.
 
@@ -440,3 +451,457 @@ and lighting for far meshes; (3) float ray tracing is NOT wanted (BSP precision)
   #121: fs::copy_file writes 0 bytes on the Vita (HP2's Save0.bmp was empty, so the front end showed no slot picture; the persistent
   actor cache too): VitaFile.h's VitaCopyFile in KWSave.cpp and HP2Persist.cpp. First HP2 run with the front end (user): works,
   PrivetDr ~15 fps outdoors, ~25 indoors. The HP1-tuned paths that are off for HP2 (vis_threads, surface_cache, mesh_lod) are the next look.
+- 2026-11-06 evening, HP2 optimisation (flipendo2). Bench: `VITA_APP=hp2 vitarun.py run hp2_willow` = the user's Slot1 save
+  (Adv1Willow, GSTATE010, the fountain courtyard) copied to Slot5, --saveslot=5 --loadgame=0 (Slot1 never touched). HP2's cutscene
+  skip is Enter (bSkipCutScene), not Space; PrivetDr is cutscenes only (Enters skip into FlyingFordCutScene). RCFG_<key>=<n> in a
+  scenario's env overrides any render.cfg key (VitaConfig.h), e.g. hp2_willow_w3_160.txt.
+  Baseline (build 18:56): stand 65.6 ms (15.3 fps; engine 21, picture 44: 'procedural textures' 22 ms = WaterDE2 WaveTexture
+  256x256 19 ms + liquid7 WetTexture 9 ms a picture, counted inside 'node: texture' and 'node: detail/macro'), turn 61.3.
+  #122 water pictures on their own thread (VitaWaterJobs.h; water_thread, water_thread_priority 160, water_thread_cores 3; the
+  log lists '<tex> WxH on the water thread' and '<tex> queued to done'), #123 NEON ShadePlanar (rsqrte + 2 Newton; WaterDE2
+  ~19 -> ~11 ms a picture on the thread). On core 1 alone the thread starved (0.1 pictures a frame, ~290 ms late: something
+  keeps core 1 busy, not looked into); cores 1+2: 0.5 a frame, ~25 ms late. stand 65.6 -> 42.9 ms (23.4 fps), turn 61.3 -> 52.4.
+  Next in Adv1Willow: level tick 16.5 (Tick events 7.8 for 450 actor ticks; 'ticks by class' counts 2 per frame for harry,
+  BaseCam, GameReplicationInfo: probably Entry's actors ticked too), bsp info 5, process 5, draw nodes 9.
+- 2026-11-07 HP2 rounds (bench hp2_willow; all shared code, HP1 checked with 'vitarun.py bench': fire1 50.4 -> 49.4 / 57.9 -> 56.7):
+  #124 HP1_DUMP lists the entry level ('HP1 dump entry'): HP2's Entry.unr has a placed Harry with his BaseCam, StatusManager and HUD
+  items, ticking unseen. #125 entry level ticked every entry_tick_rate (10) frames ('entry level' in 'engine parts'): 1.6 -> 0.4 ms.
+  #126 particle laps ('particles: update/setup/draw/count'): turning in Adv1Willow 1500 particles, draw 9.5 ms. #127 the CPU copies
+  at ~0.4 GB/s ('polygons: keep copy', calls = KB): particle vertices now written straight into the device batch
+  (RenderDevice::VitaBeginTriangles/VitaEndTriangles) and the batch resizes without zeroing (VitaNoInitAlloc): draw 9.5 -> 6.6 ms.
+  #128 '@script <actor> <function>' prints a function's code (PrintPrettyExpression) from the actor's class chain and states
+  (HP2's scripts are stripped). #129 an empty script function (bare 'return', nothing back) is not run: Frame::Call returns
+  (~183 a frame: Super.Tick into Actor.Tick of torches, movers, HPawns). #130 native operators (Operator flag) run without a Frame,
+  IsEventEnabled or TraceCall (~930 a frame): 'tick: Tick event' 15.0 -> 12.9 us a call.
+  hp2_willow now: stand 65.6 -> 39.6 ms (15.3 -> 25.3 fps), turn 61.3 -> 47.4 ms. Left: level tick 14.4 (script frames ~13 us a
+  Tick; jelly beans bounce forever by the original's code, ~0.4 ms of physics each: docs/re/engine/physics.md), bsp info 5,
+  process 6, draw 9-14 (particles: update 2.2 us a particle, PFX accessors call GetParticleFXProps each time).
+- 2026-11-07 ~11:00 USER: HP2 crashed (FATAL std::bad_alloc, heap 215 of 222 MB) 2-3 s after opening the chest before Adv1Willow's
+  Alohomora wall, twice; no cursor in the in-game menu; camera pitch inverted. (1) A LEAK in VitaGLQueue.h's Arena, old (the
+  baseline grew 139 -> 175 MB while turning too): a request bigger than a block (256 KB: a big particle batch, rain) went to a
+  block at the end of the list and moved 'current' there, so the next small request added another 256 KB block while the kept
+  ones went unused; Reset kept them all: +256 KB a frame (~4-7 MB/s among particles; #127's bigger batches made it worse). Big
+  requests now have their own list. Checked: arena test (5000 frames: 2 blocks; the old code 5001), glqueuetest ok, the console
+  turning 100 s: heap 139-142 MB (was 139 -> 232). New: render.cfg heap_probe=1 logs 'heap growth by section' (mallinfo around
+  every VitaTimers section; slow, for leak hunts). (2) #131 HP2's UWindow menus draw their wand cursor only without a Windows
+  mouse (the original's fullscreen): bWindowsMouseAvailable stays false for HP2, and the stick's / touch's absolute position goes
+  into the console's MouseX/MouseY (= WindowsMouseX / Root.GUIScale; HPConsole's UWindow KeyEvent gives mouse deltas to its menu
+  book first). Checked with the real stick: vitacompanion 'press right-stick X Y' (0-255, 128 = centre), 'release all'.
+  (3) Not code: BaseCam.ApplyMouseYToDestPitch negates the pitch when Harry's bInvertMouse, and hp2/system/SE-User.ini had
+  [Engine.PlayerPawn] bInvertMouse=True: set to False on the card (old file in logs/backup/hp2-SE-User.ini.1107); the menu's
+  Options > Input toggles it. '@script' takes 'console' or 'Package.Class' too.
+- 2026-11-07 afternoon (user away, 'continue optimising'; their pick: Grandstaircase_hub, big open hall with stairs):
+  bench hp2_stairs = new game on PrivetDr (slot 6), '@set Harry CurrentGameState GSTATE050', '@travel Grandstaircase_hub' (a --url
+  start of the hub runs every chapter's cutscenes: ~600 CutScriptDisk loaders and ~80 MB of heap, bad_alloc; --gamestate is
+  applied only after 5 s), Enter, 4 s walking out of the corridor (user), then stand / turn / turn looking up. Heap ~200 MB there.
+  Memory notes: the system has 8 MB of main RAM left after vitaGL (Boot lines now show 'heap' and 'system free'), so the 256 MB
+  heap cannot grow; objects of the hub are 63 MB ('@memory', #137: textures 41, sounds 10); OpenAL keeps every played sound as
+  16 bit PCM (hub ambients 2.7 MB each). Tools: #135 script_profile=1 ('script functions by time'), #136 MakeNoise probes,
+  #138 heap_probe by actor class, #141 vm_laps=1 (Frame::Call setup ~1 us, finish ~1 us: the cost is volume, ~9900 script calls
+  and ~49000 statements a frame in the hub), #132/#126 particle laps. Fixes: #133 particle props/light once per system, #134
+  spinning particles' angle wrapped before cos/sin (newlib's slow reduction of huge angles), #139 resting bouncers (37 jelly
+  beans, PHYS_Falling + bBounce, not moving for 30 steps) sleep until touched: bean physics 13 -> 2.4 ms, #140 hidden actors not
+  placed in the BSP each frame (skeletal boxes 766 -> 516 a frame, bsp info 15.4 -> 10.8), #142 the 'Super.Tick; f += dt;
+  if (f < c) return' prefix of a script function (HPawn.Tick: ~410 calls a frame) answered natively (tick_guard=0: off).
+  hub: stand ~104 -> 91 ms, turn 86 -> 75 (level tick 55 -> 38). hp2_willow: stand 39.5 -> 35.1 (28.5 fps), turn 46.3 -> 41.8.
+  Later the same afternoon: #144 a skeletal actor that has not moved and is > 1000 units from the camera gets its BSP placement
+  (render box) every skel_box_rate (4) frames (bsp info 10.8 -> 5.5 ms in the hub; #143, a box cache keyed by pose, never hit:
+  the candles animate; removed). #142 also takes a float instance variable as the limit (CreatureGenerator.Tick). #145
+  vm_laps=1 splits VitaCallEvent: dispatch ~1-2 us, the rest is the scripts' own work (~6400 script calls, ~35000 statements a
+  frame in the hub, ~0.5 us a statement): what is left is volume (fewer ticks or a faster interpreter, both big).
+  hub (hp2_stairs): stand ~104 -> 87 ms, turn 86 -> 71. hp2_willow: 35.1 / 41.8. HP1 fire1: 49.4 -> 46.5, 56.7 -> 54.8, no errors.
+- 2026-11-07 evening, USER: 'the game often crashes going from location to location' (HP2). Cause: no level was ever freed
+  (PackageManager::LoadMap makes a new Package each load, UnloadMap only closed streams, GC::Collect unusable): +~20 MB a door,
+  bad_alloc on the 3rd-4th door EntryHall_Hub <-> Grandstaircase_hub (bench hp2_hall_chain, the player's Slot1 save copied to Slot4).
+  #146 VitaLevelRelease.h (end of UnloadMap; render.cfg level_release=0 = old way, level_free_actors=0 = hollow only,
+  level_release_why=1 = log which outside objects keep old ones): RefCleaner nulls every property reference (recursive: structs,
+  dynamic/fixed arrays) from outside objects to the old map's actors (UE1 does that for destroyed actors; Entry's BaseCam.Zone,
+  GameReplicationInfo.PRIArray, HP_Scripted ScriptedTexture.NotifyActor, FE pages' PlayerHarry kept whole levels); GC::
+  VitaFindUnreached marks from everything outside the old package; unreached actors get their properties destroyed (block -> one
+  shared copy of the class defaults with bDeleteMe=true), BSP models emptied, the old ULevel's Actors/Collision/LightSystem reset;
+  then actors + models + polys are FREED (GC::VitaFree), the package forgets them and its tables (Package::VitaForgetExports /
+  VitaForgetTables). ULevel shells, textures, sounds, classes stay. Caches keyed by actor/model clear on vitaLevelEpoch
+  (VitaLevelEpoch.h: KWSkeletal SkelCaches + VitaSkinCache, KWParticleFX States, KWPhysics vitaRests, KWSound music.player,
+  VisibleCorona, KWBspCheck hull cache). Engine bug fixed: UObjectProperty::MarkPropertyElement marked the slot's address, not the
+  object (nothing was ever marked through object properties). UObject::Mark skips unloaded objects. CallEvent to an actor with no
+  Level is dropped + logged (was a data abort: Entry BaseCam sent ActorLeaving to a hollowed LevelInfo).
+  Result (6 doors): heap at each LoadMap 185,195,197,197,197,197 MB (was 187,208,229,249 -> crash); release ~1.1 s per door.
+  hp2_hall fps unchanged (stand ~85 ms, turn ~66). VitaOverlay: rear touch ignored in bench runs (a console lying on its back
+  switched the overlay off: no VitaBench lines from 19:20 on).
+  NOT DONE: HP1 check of #146 (tools/bench/hp1_chain.txt: Fire1 -> Tut1 -> Fire1 -> Tut1) ran 21:19 but the fetched log was
+  EMPTY (0 bytes; the Vita log had grown to 382 KB): re-run / fetch ux0:data/flipendo/flipendo.log and check LevelRelease lines,
+  no FATAL, no 'no level' events. Also not done: HP2 save -> load (LoadFromSaveFile path) after doors; hp2_willow / hp2_stairs fps.
+- 2026-11-07 evening, NEW MACHINE: a desktop PC (16 cores, still WSL; kernel 4.4.0-19041-Microsoft = WSL1), the laptop is no
+  longer used. VitaSDK 2026.08 here lacked packages: installed with vdpm (user's OK) libopenmpt libvorbis (+ mpg123, libogg) and
+  sdl2_vitagl IN PLACE OF sdl2 (vdpm's plain sdl2 has no vitaGL video driver: link fails on glXxx; `vdpm remove sdl2` first,
+  they conflict). Same flags (-O3 -marm), GCC 15.2: fire1 46.7 / 54.1 ms = the laptop's numbers. No ~/vita-tools here.
+  Workflow made faster: build.sh runs make -j$(nproc) (full build ~75 s) and touches only vita/ sources whose sha256 changed
+  (<dir>/.srcsums; touching all of them rebuilt every engine file including a Vita*.h): a build without changes 4.5 s; it raises
+  VITA_TEXT_PAD_BYTES by 16384 by itself on 'Cannot allocate ... SCE data' (build/ is at 94208 now). vitarun.py: the run ends
+  as soon as the log ends with 'Audio device has been shut down' or FATAL (FTP REST of the last 2 KB; was 60 s of STALL each
+  run), polls every 3 s, a 0-byte log also counts as stalled, the log fetch is retried until its size matches the Vita's,
+  VITA_BUILD=build-profile deploys the profiling build.
+  HP1 check of #146 (hp1_chain, Fire1 -> Tut1 -> Fire1 -> Tut1): works, no FATAL, heap at LoadMap 103, 122, 131 MB.
+  The game sometimes HANGS at the start with an EMPTY flipendo.log (vita-main.log complete, no dump; the next launch works):
+  cause not found; #147/#148 make the log show where it stops next time.
+  - VitaShadows: when the shadow's Update is Engine.ActorShadow's (not overridden, no state), its MoveThreshold early return is
+    made natively and exactly (BonePos of bone 0 + 1 in Z vs OldOwnerLocation, bOriented rotation): Update events 15 -> 5 a frame
+    in Lev2_Fire1 (snails), the test ~20 us a shadow. ~0.3 ms.
+  - #148 VitaLogWriter.h: the log on a 'logwriter' thread (LwMutex, every 250 ms; FATAL and the end at once). The profile had 5-6%
+    of the engine thread in the log callback (the once-a-second card write blocks tens of ms): fire1 46.7 -> 44.8 ms, the worst
+    fps standing 7 -> 18.
+  - #149 Package::FindObjectReference through a by-name index of the export table (was a walk of the whole table per lookup,
+    ~20% of loading): first frame of Lev2_Fire1 by --level 27.3 -> 22.8 s. Loading is now mostly the card: 103 MB at ~8.5 MB/s.
+  Profile of fire1 in play (build-profile, 07 Nov 21:19): script VM (RunExpr/Call/Run/ExpressionValue) ~20%, ULevel::Tick 2%,
+  BoxSweep 1%, VitaProbes::Now 1% (probes on).
+  - #150 'LoadMap done' ends with 'whole files at N MB/s': 11-12 MB/s (one read() of up to 20 MB) = the card's own speed. Of
+    Lev2_Fire1's 103 MB, 76 MB come whole (~6.3 s) and 27 MB in ~1500 small reads (~5.7 s, ~4.7 MB/s): only that part could still
+    gain (fewer scattered reads before a file is read whole, SlurpAfter 48); the rest is the card.
+- 2026-11-07 evening/night (new PC), user: 'optimise until I say stop; first reach ~stable 30 fps here (Lev2_Fire1), then other
+  levels'. Bench fire1 (stand / turn, ms): 46.7 / 54.1 at the start of the session -> 36.2 / 40.4 (27.6 / 24.9 fps).
+  - render.cfg probes=0 section_timers=0 now (template AND the card; the card's old file: logs/backup/render.cfg.vita.1107):
+    they cost ~2 ms a frame in normal play. fire1 = as the player plays; fire1_probes (RCFG_probes=1 RCFG_section_timers=1) for
+    the breakdown; fire1_vm adds vm_laps + script_profile. RCFG_<key> now also overrides the keys VitaRenderDevice.cpp reads
+    itself (probes, section_timers, vsync, ...): before, those were ignored.
+  - vitarun.py deploys by itself when build/flipendo.self changed since the last deploy (tools/.deployed_<TITLEID>;
+    VITA_NO_DEPLOY=1 to skip). Twice a 'run' without --deploy measured the old build: that is why.
+  - #151 ActorShadow.Tick natively (52 shadows: 1.73 -> 0.79 ms), #160 ActorShadow.Update natively when the owner moved (the
+    natives of its bytecode, '@script ActorShadow Update': the int Max, SetLocation = FarMoveActor, SetRotation = MoveActor),
+    #156 AttachDecal's trace finds only the first hit (168 -> 73 us), #166 shadow pairs handled once a game frame (the sky frame
+    did them again). process: shadows 4.4 -> ~2.6 ms.
+  - #152/#153 fog maps: rebuilt when the eye moved > fog_move_percent (3) of the distance, at most fog_budget (10) a frame for
+    eye movement (new ones and ones waiting 4 x fog_rate always): turn 49.5 -> 46.0. GOTCHA hit again: marker 'vita-fogmove'
+    was a prefix of the existing 'vita-fogmoved' (#152 silently skipped); renamed 'vita-fogeyemove'.
+  - #154 mesh prepass started (VitaJobs::BeginAsync) after DrawPortals, before the level surfaces are drawn; joined in
+    DrawOpaqueActors. #155 LightSystem::BeginFrame on a worker while the main thread does 'bsp info' (first 3 frames on the main
+    thread; the config statics it reads in some branches are touched first: vita-lightbegin-touch). ~1 + ~2 ms.
+  - #157 SingleLineCheck with only TRACE_Movers|TRACE_Level skips non-mover actors before their primitive test (walking
+    physics' ledge probes), #161 ActorsInBox into kept lists (no gain measurable), #162 script jumps through a dense offset ->
+    statement table (was a std::map per jump; ~0.5 ms), #163 NativeByName entry kept in the UFunction, #158 IsA cache in the
+    actor iterators.
+  - #164 the sky frame walks only BSP subtrees touching its (sealed) zone: 'VitaSkyWalk: sky zone 22 sealed: walk keeps 16 of
+    12660 nodes' in Lev2_Fire1; the sky step was not the walk though: 'sky: sort spans' (#168 counting sort: 0.4 -> 0.2 ms),
+    'portal frame: clipper setup' 0.3 and 'walk' 0.6 ms come from thousands of portal spans (one per row per backdrop polygon).
+  - Fire1 frame now (probes): level tick ~14 (Snail 3.9 [physics 2.7], VenomousTent2 1.7, Harry 1.2, BaseCam 0.7, GRI 0.6),
+    process ~8 (clipper surfaces 5.5, shadows 2.6), draw ~10 (sky 1.3, surfaces 1.9, actors 4.7, HUD 1.1). VM: ~11500
+    statements and ~2250 script calls a frame, ~1 us a statement: the biggest block left; per-call setup+finish ~2 us.
+  - @script also takes a class name (first actor of it). Scripts of Lev2_Fire1's classes are in the map/other packages (the
+    MagiPacks HarryPotter.u keeps source for 107 classes only): use @script on the console.
+  - Survey 08 Nov 00:12 (lvl_<map>.txt: --level start, stand + turn): Lev_Tut1 and Lev4_Sneak at the vsync cap (30.0) there;
+    Lev2_Inc_A 25.5 fps (its bench at 58-75 s is the Incendio spell lesson with Sprout): opaque actors 10 ms (19 meshes).
+  - #172 face_threads_min (render.cfg, default 192 as before): with 64, 11 meshes went to the three-core face loop and the frame did
+    not change: one mesh's parts are done before the woken workers start (probe 'mesh faces mt: run' 203 us a mesh vs ~270 serial).
+  - #174 VitaMeshFaces.h: the prepass builds the main view's opaque faces of the meshes it skins (materials resolved on the main
+    thread as DrawSkeletalMesh does, via VisibleMesh::VitaSetupLodMeshTextures); DrawSkeletalMesh hands the runs over. Screenshots
+    identical (inca_faces_1/0). Lev2_Inc_A opaque actors 10.0 -> 8.4 ms. Left there: 'mesh faces: renderer' 57 us a run (the
+    GouraudVertex -> BatchVertex copy in DrawGouraudTriangles; the device ignores GouraudVertex.Fog), mesh prepass ~2.6 ms on the
+    main thread (setup + join).
+  - #170 also made every non-latent, non-iterator native with an index frameless (fast_natives=0: off); #171 call results moved.
+  - build.sh runs apply_fixes.sh twice and stops when the second run changes anything (#168's first marker was not in its own
+    inserted text: the block was inserted again on every build, 15 copies nested before it was noticed).
+  - Survey 2 (08 Nov 01:45, lvl_<map>.txt): at the vsync cap from their --level start: Lev_Tut1b, Lev3_Lumos, Lev3_Troll,
+    Lev2_RemChase, Lev5_Final (and Lev_Tut1, Lev4_Sneak). Below: Lev3_Intro (Great Hall, students) 42-43 ms standing, Lev2_HogFront
+    39, Lev4_Sneak2 36. HP1 level changes (hp1_chain) fine; heap 110/130/141 MB at the LoadMaps (+7-10 MB of new caches).
+  - '@bench <actor|class> <function> <n>' (#175): microseconds a call (+ setup/run/finish with RCFG_vm_laps=1). Harry.Vec (4
+    statements) 8.3 us, VenomousTent2.CheckForHarryHit 69 us. NOTE: 'vm: statements' in the laps is counted every frame but divided
+    by the sampled frames (x8): really ~1400 statements a frame, so the interpreter's own overhead is ~2-3 ms a frame, not the
+    biggest lever. #176 the event-ness of a function name kept in the UFunction (tiny gain).
+  - #177 VitaLightGrid.h: SetupMeshLighting asks a grid for the lights that can reach the mesh (tests/lightgridtest.cpp: 200000
+    queries equal to the full loop). Prepass setup split by probes ('prepass setup: pose/light/faces/...'): in Lev3_Intro 'light'
+    143 -> 95 us a mesh, 'faces' 53 -> 29 (the material order per mesh+LOD kept). Still on the main thread: SetupMeshLighting
+    (writes the light fade cache and the BSP hull caches through its visibility line checks: not for the workers as is).
+  - Lev3_Intro left: process 10.8 (shadows 3.4: 52 students' shadows, most move a little every frame -> native Update +
+    AttachDecal ~45 us each; clipper surfaces 5.1), draw 14.6 (surfaces 3.5 for ~300 surfaces, actors 7.3 incl. prepass).
+  - #178 KW's mesh light snapshot takes LightSystem's list of the frame (same filter, same order) instead of scanning every
+    actor again; the prepass stores its skinned arrays in the skin cache by swapping (VitaSkinStoreSwap: 'prepass: store' 0.5 ->
+    0.06 ms). Lev3_Intro 42.4 -> 41.5 / 37.2; fire1 33.8 / 37.1 ms (29.6 / 27.2 fps) at 03:15 on 08 Nov.
+- 2026-11-08 night (user: 'keep going until fully done, leaving you for the night'):
+  - New probes: 'shadow: bone' / 'shadow: moved' (VitaShadowSkip laps), 'check: brush primitives' (#179), 'clip: project / edges /
+    spans' (VitaCheckPolygon laps). HogFront: clip project 3.4, edges 4.2, spans 5.2 us a polygon (each lap mark ~0.7 us);
+    actor line check 38 us (hash ~13, ~4.7 primitives of ~4 us; brushes 11 us); shadow bone 14 us a shadow.
+  - Profile of Lev3_Intro (build-profile, intro_profile.txt, logs/profile-intro.txt): flat. Clipper ~9% (CheckSurface with the
+    inlined VitaCheckPolygon 4%, DrawSpan 1.8, IsAABBVisible 1.4), VM ~12%, PropertyDataBlock::Ptr 3.3, NodeRayIntersect 2%.
+  - #180 collision hash cells std::list -> std::vector (same order; an emptied cell is kept): Intro 41.5 -> 41.3, HogFront 39.0 -> 38.1.
+  - #181 decal trace (VitaTraceFirst): 15 nodes but 173 polygons a trace (coplanar chains; their planes differ in the last bits,
+    so a 'same plane' shortcut caught almost nothing). Each chain is now a contiguous list made once (member, copy of its plane,
+    its box; chain box): the segment's box vs the chain's and member's box, NodeRayIntersect's own plane test from the copy,
+    the plane point vs the box with a margin 1 + 1/cos. 110 -> 25 us a trace; Intro process shadows 3.5 -> 2.8 ms.
+    trace_check=1 (render.cfg) compares every decal trace with the full TraceDecal walk: 17200 traces, 0 differ.
+    Tried first and dropped: near side first (no gain; and NodeRayIntersect returns tmax for a miss, so a tie test can't tell).
+  - fire1 stand at the vsync cap (33.3 ms) at 05:10, turn 37.0.
+  - #182 VisibleMesh::Draw's UpdateLightList (a ray from every light in range each 6 units moved) skipped for KW skeletal meshes
+    without a weapon: KW lights them from its own snapshot and nobody reads actor->TouchingLights for them (readers: engine
+    DrawMesh/DrawLodMesh paths, i.e. a pawn's non-skeletal weapon; movers; particles use their own actor). Intro students walking:
+    136 us each when it ran.
+  - #183 probes 'mod: ...' (each mod of HP1::TickMods) -> 'mod: frame limit' 1.1 ms a frame in Lev3_Intro. #184 the frame-limit
+    mod is off on the Vita (vsync paces it; the limit is for > 110 fps): Intro turning 36.8 -> 33.0 ms, HogFront 35.4 -> 33.4.
+    Why it waited at all was not settled (it should only wait when a frame is under 16.7 ms; maybe TickMods ran twice a frame).
+  - tools/laps.py <log> t0 t1 N: the probe laps (and engine parts / draw steps) averaged over a window of a probes log.
+  - #185 (VitaMeshFaces.h / VitaMeshPrepass.inc) the prepass's faces are made on the workers as the device's batch vertices (9
+    floats: u, v already times GetUMult/GetVMult of the material, set up on the main thread); VitaDrawPreparedFaces copies each run
+    into VitaBeginTriangles' room (memcpy when exposure is 1, else the same products). Was DrawGouraudTriangles' per-vertex
+    conversion on the main thread ('mesh faces: renderer' 57 us a run, 2 ms a frame in Inc_A). Screenshots (inca_faces_1): Sprout
+    the same. ~1 ms a frame in Inc_A, Intro, HogFront.
+  - #186 VitaJobs::BeginStream/Publish: a run whose jobs are handed over as they are set up (workers take an index only below
+    'published', by compare-exchange; Publish signals them). VitaPrepareMeshJobs now has two passes: (A) LOD, skin cache test,
+    pose or its preparations (every insertion into SkelCaches), then (B) light, faces' materials, buffers, and in the early
+    prepass each job is published at the end of its (B) (prepass_stream=0: as before). Small gain alone (~0.3 ms): the
+    workers' own work was the bottleneck: probes 'job: pose / skinning / normals / vertex light / faces' (timed on the worker,
+    added up at the store): Inc_A per frame 0.7 / 1.1 / 1.0 / 1.5 / 2.4 ms for ~10 meshes.
+  - #187 the faces job: every wedge's LOD wedge and vertex mapped once per job (VitaLodWedge was walked for each corner of
+    each face, in the normals loop too), the 9 batch floats written straight (no GouraudVertex), no per-vertex fog (the
+    device never reads it), and the main thread no longer makes the job's VertexLight (InitVertexLight + GetRenderBoundingBox:
+    only that fog used them). faces_check=1 runs the old loop beside it and compares the bytes: 0 differ in Inc_A and Intro.
+    GOTCHA (found by faces_check's first version, which allocated its buffers on the worker): the game HUNG within seconds.
+    A meshjobs worker must not allocate either (malloc's lock): every buffer is sized/reserved on the main thread (batch,
+    triMat, wedge maps, check buffers); the old faces loop's tris.reserve on the worker did allocate now and then.
+  - 07:30 (#180-#187): Inc_A 35.4/35.0, Intro 38.0/31.3, HogFront 35.9/32.0, fire1 31.8/35.9 (stand/turn ms). hp1_chain fine
+    (heap 110/129/139 MB, no FATAL).
+  - #188 counts 'old faces: translucent pass / other light actor / no prepared faces' (why DrawSkeletalMesh made its own faces):
+    Inc_A 7 meshes a frame without prepared faces = skin cache hits (the prepass made no job for them).
+  - #189 a skin cache hit (VitaSkinWouldHit) in the main view gets a faces-only job: the worker reads the kept entry's verts /
+    normals / lights (nothing writes the cache before the join), Unlit = the entry's (DrawSkeletalMesh's hit path calls no
+    SetupMeshLighting either), and the store leaves the skin cache alone. Inc_A opaque actors 6.5 -> 5.6 ms.
+  - #190 VitaCheckPolygon: before its edges and spans, the polygon's screen box (one pixel wider each side than any span it can
+    make) is tested against the open gaps of its lines (IsVisible): none open -> hidden, and DrawSpan would have changed
+    nothing. clip_check=1 runs the full way after such an answer: 160000 polygons (Intro, fire1), 0 visible. ~0.3 ms.
+  - #191 MultiLineCheck's level part (ModelLineCheck on the level's static BSP) through a 1024-entry table keyed by the exact
+    line, extent and node flags (emptied on a new model or level epoch; world_cache=0 off). Intro: 46% of the level checks
+    answered from it; world_cache_check=1 makes each answered check again and compares the bytes: 127000, 0 differ.
+    GOTCHA again: #191 replaced the line that carried #111's marker ('vita-checkprobe-world'): #111 then tried to apply on
+    every build and failed; the new line keeps the old marker. A replacing edit must keep the markers of what it replaces.
+  - #192 AllActors(Class): the slots of Level.Actors holding the class are kept per class (sorted indices; valid until the
+    list is compacted: vitaActorsVersion in VitaLevelEpoch.h, bumped at ULevel::Tick's swap; new slots looked at on demand). The
+    iterator still reads the live slot (null: destroyed) and checks Tag/Event there. GameReplicationInfo.Timer (every 0.2 s:
+    AllActors(PlayerReplicationInfo) + two 32-step loops) 882 -> 687 us: the rest is ~280 statements at ~2.4 us (the VM).
+  - #193 vita/VitaScriptNatives.cpp: Engine.GameReplicationInfo.Timer natively (only the class's own Timer, no state, not
+    NM_Client, fewer PRIs than PRIArray holds; everything read is checked before anything is written, else the script).
+    Found with temporary stamps inside UActor::Tick: GRI's 0.3-0.65 ms a frame in 'ticks by class' was its Timer (~820 us a call,
+    ~0.3 calls a frame counting the entry level's). gri_timer_check=1: the script, then the native way, compared: 1000, 0 differ.
+  - script_profile in HogFront (its figures are per 8 frames: divide by 8): VenomousTent2.Tick ~3 ms a frame for 14 (its
+    CheckForHarryHit every 0.07 s), Snail.Tick ~1.9, HUD PostRender ~0.8, Harry.ViewFlash ~0.6, PlayerTick ~0.6, PotCam.Tick
+    ~0.5, WingardiumBlock.Tick ~0.5 (54 a frame), Harry.Vec 0.24 (15 calls of a 3-line function). The VM costs ~2.4 us a
+    statement (GRI.Timer: 280 statements = 687 us): a faster interpreter (ExpressionValue is a type-switched union moved on
+    every push/pop, RunExpr a multi-pass stack machine) is the biggest lever left, and a big job.
+  - Ideas not done: VitaReplay-style reuse of the BSP walk while the camera does not move; frustum box test per polygon before
+    projecting; shadow bone (14 us a shadow) from the prepass pose; NEON for VitaCheckPolygon's projection/edges.
+  - #194 ExpressionValue: a scalar's copy/move copies 4 bytes, not the 48-byte buffer (VITA_SCALAR_COPY): GRI.Timer in the VM
+    687 -> 652 us; engine ~0.2-0.4 ms a frame. #184 now skips the frame limit only with vsync=1 (vita-nofps2).
+  - Survey 3 (12:15, build of 11:00): the light levels run past 30 fps now (Lev_Tut1 37/41, Lumos 41/43, Troll 38/43, Sneak 38/43,
+    Final 43/52, RemChase 60/53): the 30.0 'cap' of the earlier surveys was the frame-limit mod. Pacing with vsync at 60 Hz is
+    uneven there (frames of 16.7 and 33.3 ms); a 30 fps lock (swap interval 2) is not made yet if that judders.
+  - OPEN BUG (user, 08 Nov ~13:00): an actor's shadow blinks while it walks (Hagrid on Lev2_HogFront outdoors, Dumbledore in
+    Lev_Tut1's opening). Looked at so far (temporary logging, all removed again):
+      * AttachDecal does not fail (2 null of 12000 moved updates in Lev2_Fire1);
+      * Dumbledore's shadow (ActorShadow, exact native path #160) is handled every rendered frame and its decal has 1-4 nodes
+        attached frame after frame (a ~7 s stretch with 0 nodes, likely legit);
+      * logging VisibleDecal::DrawDecals per frame: frames where the decal is attached to N nodes but 0 pieces are drawn
+        (323 of 2463 in the opening, e.g. '2/1 2/1 2/0 2/1 2/0 2/0 ...'): the decal's nodes were not drawn those frames.
+    So the suspect is which floor nodes get drawn (decals are drawn only with their node in OpaqueNodes), or a depth
+    fight of the decal (depthOffset 1 unit along the view axis). Next: log the decal's node indices and whether each is in
+    the frame's OpaqueNodes; A/B render.cfg shadow_native=0 / shadow_tick=0 / shadow_skip=0 (earlier shadow work, #151/#160/#166)
+    and clip_check / clipper_scale=25 (#190 and the clipper scale decide which nodes are drawn); check whether the blink is
+    there in the PC build (then it is SurrealEngine's decal code, not the Vita work).
+- 08 Nov, user bugs (after the stop): (1) every cast drops the frame rate, by level; (2) Wingardium on the stone block -10 fps;
+  (3) menus: main 60, video options 30, folio (wizard cards) 3-4 fps; (4) mouse sensitivity is reset at each level change.
+  New scenarios: menu_pages (pause menu, OPTIONS, FOLIO by @console.MenuBook OpenBook/ChangePageNamed), menu_folio, menu_uwcheck,
+  cast_tut1 / cast_hogfront (HP1_KEYS '01' = left mouse = AltFire: aim while held, cast on release; a bare '1' is the key '1').
+  - Menus: all script time of UWindow painting (draw game, not the device). FOLIO: UWindowWrappedTextArea.Paint walks its whole
+    ring buffer (I += J where J is never set: the loop ends only at Tail), ~375 WrapClipText("") per Paint, twice a frame: 278 ms.
+    #195 (VitaScriptNatives.cpp, Frame::Call hook vita-scriptnative-call, UStruct::VitaScriptNative): Canvas.SetPos/SetOrigin/
+    SetClip, UWindowWindow.TextSize/ClipText/DrawStretchedTextureSegment and WrapClipText of an empty line natively, exactly as
+    their scripts (checks: own function, callee resolution, Root, argument types; else the script). uwindow_check=1: 128000
+    calls compared, 0 differ. Result: pause menu 55 -> 60 fps, OPTIONS 25 -> 32, FOLIO 3.4 -> 25. Left on FOLIO: the Paint loop
+    itself (~28 ms of loop statements); a native UWindowWrappedTextArea.Paint would finish it.
+  - VitaRenderDevice.cpp: render.cfg probe_every (default 8; 1 = every frame) and, with probes on in that frame, a 'SLOW FRAME
+    laps (ms): ...' line (the frame's 16 biggest laps); SLOW FRAME lines capped at 400 (the 20 went in the level load).
+  - Casting (Lev2_HogFront): two frames of ~140 ms at each cast = 'prepass setup: light' 75 ms: KW::SetupMeshLighting's
+    BeginFrame -> VitaLightGrid::Update made the whole grid again whenever the list of lights changed (the spell's light comes,
+    then goes; outdoor lights with big radii). #196 VitaLightGrid.h: a slot per light kept while it is listed; a changed list
+    only puts in / takes out the lights that came / went; past MaxLoose moved lights only those are put again (no full rebuild).
+    tests/lightgridtest.cpp (now with lights coming anywhere in the list and huge radii): 200000 queries, 0 differ (ASan too).
+    Aiming itself: Target.Tick -> setTarget -> Harry.ExtendTarget -> VisibleActors ~1.7 ms a call every other frame (+ the
+    reticle's drawing): ~+3.7 ms engine on HogFront, ~1.6 ms on Lev_Tut1. Not changed yet.
+  - #195b: the natives' classes were found with FindClass at the first script call of the boot, which loaded the UWindow package
+    early: the title menu's cursor stopped moving (seen by the user; uwindow_natives=0 fixed it). Now taken from the window's class
+    chain at the first UWindowWindow call (VitaFindScriptNative returns -1 until then: asked again). uwindow_mask (bit per
+    function) for bisecting. Cursor checked with menu_cursor (HP1_MOUSE + HP1_SHOTS into ux0:data/flipendo).
+  - #197 (Engine.cpp): mouse sensitivity reset at each level change: FEOptionsPage.SensitivityChanged only sets
+    GetPlayerOwner().MouseSensitivity, no script saves it, and Engine::LoadMap's login reads PlayerPawn's options from User.ini
+    (UPlayerPawn::LoadProperties). The player's SaveConfig before the old map goes (LoadMap and the save-game load path) and at
+    exit, KnowWonder only. sens_travel: 2.4 set in Lev_Tut1 is 2.4 in Lev2_HogFront. Not checked against HP1's Engine.dll (no IDA here).
+  - VITA_BENCH=1 in env.txt turns the sticks off (vita_input.cpp): never leave it in env.txt for the user's own play.
+  - The user: no drop when casting or levitating any more (after #196). Slot 3 = the user's save in Lev_Tut3's big open part
+    (copy in the session scratchpad); scenarios slot3_spot (probes), slot3_plain. Without probes: standing 31.1 ms (32 fps),
+    turning 27.2 ms. Probes on: process 16 (node surfaces 1800 a frame, 930 into the clipper at ~10 us: project 3.5 x 766,
+    edges 5.6 x 359, spans 7.5 x 359; node boxes 888 x 4.2 us), draw nodes 10, tick 7. clipper_scale 18 -> 12 only -1.5 ms.
+  - render.cfg fps_lock (default 30, with vsync=1): the game at an even 30 fps by the swap interval (eglSwapInterval 2: a frame
+    stays two refreshes on the screen); 1 for frames without level surfaces (menus, loading: 60 fps). The interval goes with
+    VitaGL::Queue::Swap(interval) (the glsubmit thread sets it before vglSwapBuffers). fps_lock=0: the old uneven 16.7/33.3 ms.
+    The mesh LOD (lod_min_fps=30) stays at full detail (target = 30 x 33.3 ms = 1.0). Lev_Tut1: 37-41 uneven -> 30.0 (33.3-33.4
+    ms); slot 3 spot 32 -> 30.0; title menu 60.
+  - #198 game debug build (above, Build); #199: Canvas text with Font None (debug mode's first title frame) crashed in
+    RenderSubsystem::DrawText (data abort, dump 1794142810): no font = nothing drawn, size 0 (logged once).
+  - Lev4_Sneak2 through the debug Level Select (FEBook.RunURL; scenario levsel_sneak2, levsel_chain): after the first cutscene
+    18.7 fps (user: 18-19) = ~36 light maps built again a frame (6 dynamic lights) 9.9 ms + their atlas copies 3.9 ms. Done:
+    #200 laps 'lm build: setup / static lights made / kept / dynamic / convert'; the float copy of a light map is given back
+    after its FIRST upload only (LightmapPixels::uploads; it was malloc'd again at every build: convert 4.9 -> 1.0 ms);
+    VitaFloatsToBytes (NEON; self-test line at start: 200013 values, 0 differ) for both float->byte loops (atlas slot 3.95 ->
+    1.4 ms); #201 texel world locations kept from a light map's second build (setup 1.7 -> 0.65 ms). Lightmaps 9.9 -> 4.95 ms,
+    that stretch 53 -> ~45 ms (probes on). After the Filch cutscene ~37.5 ms (26 fps with probes): not touched yet.
+  - INPUT LAG (user: the camera on the stick lags since the first debug build) = fps_lock's eglSwapInterval 2. Measured with a
+    new log line 'input to screen X ms' (a frame's start, where its input is read, to vitaGL's display callback for it;
+    vglSetDisplayCallback): interval 2 ~100 ms, fps_lock=0 ~36 ms; display_buffers=2 (render.cfg, vglSetDisplayBufferCount in
+    vita_main.cpp, default 3) changed nothing. Now: vitaGL always at interval 1, and the ENGINE thread waits before handing a
+    frame over until two refreshes passed since the last hand-over (VitaPaceTwoRefreshes, VitaGLQueue.h): 30.0 fps, ~40 ms.
+    (Pacing on the GL thread instead: 70 ms; pacing from the display callback's vcount: not even, the callback runs a refresh
+    early or a frame is still queued.) RCFG_fps_lock now works without a fps_lock line in the card's render.cfg.
+  - Script VM (user's item 2): #202 VitaFastEval.inc: statements made only of variables, constants, conversions, struct members,
+    array elements, contexts, assignments, native operators and script calls evaluated by plain recursion, each node exactly as
+    its RunExpr case (order: args left to right with context = self, Let right side first, ArrayElement array first; a None
+    context marks AccessedNone and goes on). fast_eval_check=1: pure statements both ways: 1.52 M compared, 0 differ.
+    fast_eval_stats=1: 94% of the statements run go the fast way in HogFront. #202d: Frame::Run takes them straight into its
+    result. Engine (stand): HogFront 14.1 -> 12.5 ms, Intro 13.9 -> 12.7 ms. @bench: Harry.Vec (4 lines) ~10.8 us a call,
+    impartInformation (early out) 6.8 us: call overhead + value handling dominate now; VenomousTent2 141 us a Tick (14 of them).
+    Profiling build (build-profile, HEAP 256 + EXTRA_MEMORY now; resolve_profile.py takes TOP=n): HogFront in play VM ~20-28%,
+    BSP walk ~13%; tiny always_inline helpers (PropertyDataBlock::Ptr, Deinit) show up only because inlined code is instrumented.
+  - #203 point cache (projected level points kept per view, point_cache_check: 3.4 M, 0 differ) was SLOWER by ~1.7 ms at the
+    slot 3 spot (fps_lock=0 A/B): random reads of the big arrays miss the cache, recomputing 16 multiplies is cheaper. Default
+    point_cache=0. The clipper is memory bound, not arithmetic bound.
+  - #202e VitaFastEval calls native operators itself (Frame::Call's frameless array, args evaluated into it; usual layout only);
+    #204 LaunchInfo.IsHarryPotter1/2/IsKnowWonder cached (they compared std::strings at every call); #205 UpdateBspInfo skips the
+    mesh box it overwrote for KW skeletal meshes (Sneak2 bsp info 4.25 -> 3.7 ms); #206 SetupMeshLighting's light visibility
+    check through #191's level line table (only ~3 a frame in Intro: no gain, exact), probes 'mesh light: ...' and
+    'light begin2: ...' (Intro: BeginFrame 0.8 ms a frame = the all-lights snapshot 0.4 + grid compare 0.3: memory bound).
+  - Survey (08 Nov ~20:00, fps_lock=30, stand / turn fps): Intro 26.8 / 28.4 (37.3 ms standing), HogFront 28.6 / 29.8, Fire1
+    30.0 / 27.9, Inc_A 29.9 / 29.8, Sneak2 29.6 / 29.6. Engine part 11-13.6 ms, picture 18-25 ms.
+  - #207 one FogmapBuilder kept (no malloc per fog map; Fire1 turn node: fogmap 1.27 -> 1.17 ms). #208 VitaClipBits.h: the
+    clipper's screen as one bit a pixel (IsVisible / DrawSpan / collected portal spans on 32-bit words; tests/clipbitstest.cpp:
+    1.6 M random operations against the old span code, 0 differ; render.cfg clipper_bits). A/B fps_lock=0: slot 3 spot 23.9/20.0
+    -> 23.4/19.0 ms picture, Intro 24.6/18.3 -> 23.9/18.0.
+  - TRAP (found 08 Nov night): VitaConfigInt READS render.cfg FROM THE CARD AT EVERY CALL. #208 first called it in BspClipper's
+    constructor: a VisibleFrame (with its clipper) is made for every sky / mirror portal every frame -> +4.5 ms 'sky: process'
+    in Lev_Tut3. Now VitaClipperBits() (static). Any setting read outside a static initializer must be cached the same way.
+  - #209 -fno-threadsafe-statics (cmake VITA_NO_SAFE_STATICS, default ON, core + app): every use of a function-local static
+    was an acquire load + 'dmb' (22 sites in VM/Frame.cpp, 3-4 per script statement; objdump: 0 now). fps_lock=0, stand/turn ms:
+    Intro 36.5/30.3 -> 35.7/30.1, slot 3 spot 30.5/26.0 -> 29.9/25.3, HogFront engine 12.2 -> 11.9. Thread rule unchanged
+    (workers must not be first to touch a function-local static; now a race instead of a guard wait).
+  - #210 LTO tried (cmake VITA_LTO, build-lto/ with gcc-ar/gcc-ranlib): first it crashed at start (static init order: a global
+    NameString of another file before the name tables; #210b init_priority(101) on them, kept), then ran: Intro (fps_lock=0)
+    35.4/29.9 ms against 35.7/30.1 without: within the noise, engine part even a bit slower. Not used (VITA_LTO OFF).
+  - Thumb-2 -O2 tried (build-thumb/, VITA_AGGRESSIVE=OFF; self 6.7 MB against 7.5): Intro 37.2/30.7, slot 3 31.0/26.3 ms
+    (ARM -O3: 35.7/30.1, 29.9/25.3): the picture part slower. ARM -O3 stays.
+  - Survey 08 Nov ~20:30 (fps_lock=30, debug build with #195-#210b; stand / turn fps): Intro 28.0/28.8 (35.7/34.9 ms), HogFront
+    29.1/29.9, Fire1 30.0/28.3, Inc_A 29.9/30.0, Sneak2 29.8/30.0, slot 3 (Lev_Tut3) 30/30, Sneak2 opening (level select) 24.8.
+    Left to 30 everywhere: Intro standing ~2.4 ms, Fire1 turning ~2.2, HogFront standing ~1.1.
+  - #211 'VitaViewSame' (log): standing still the main view is bit for bit the one before (Intro 600 of 600).
+    #212 VitaViewReplay.inc/.h: the main view's BSP walk logged as events (node box answers, each surface's answer + PolyFlags +
+    the clipper spans it filled, portals' spans + fills) and, while the view is bit for bit unchanged, replayed: no box/surface
+    projection; the logged fills filled again at the same point of the walk, so the clipper is the same everywhere and the
+    actors (tested live against it) get the full walk's answers; every event checked (node, flags), else the frame is walked
+    again the full way (new FrameCounter). A mover's mirror (VisibleBrush CheckPortal fills the clipper) spoils a log / fails a
+    replay. view_replay_check=1 (full walk, log compared): Intro 1775 + HogFront 1764 walks, 0 differ. With replay (fps_lock=30,
+    stand): Intro picture 23.5 -> 19.2 ms (28.0 -> 30.0 fps), HogFront 22.1 -> 17.2 (29.1 -> 30.0), slot 3 22.8 -> 14.2;
+    0 failed; hp1_chain fine. Turning (the view changes) gains nothing.
+  - BUG FOUND + FIXED (#198b): the debug build's bDebugMode (HPBase.baseConsole config) went into SE-HP.ini when the console's
+    config was saved: every later start, release builds too, showed Level Select. The card's SE-HP.ini had bDebugMode=True
+    (backup logs/backup/SE-HP.ini.debugmode.1108; the line removed). Now the debug build keeps the ini's value at start and puts
+    it back into the ini before it is written at exit (card now: bDebugMode=False, the default). game_debug=0 run: plain menu.
+  - Title menu cursor: HP1_MOUSE (synthetic raw moves) no longer moves the UWindow cursor in these tests, whatever the natives /
+    debug mode; the REAL right stick does (vitacompanion 'press right-stick 255 128' / 'release right-stick', scenario
+    menu_stick: cursor at the right edge). A test tool limit, not a game bug (cause not looked into).
+  - #213 VitaMatNeon.h: the clipper's box corner / polygon vertex projection with NEON (neon_check: 3.5 M compared, 0 differ)
+    was NOT faster (Fire1 turn, fps_lock=0, two A/B pairs: picture 23.2 vs 22.7-22.9 ms scalar): NEON<->core register moves on
+    the A9 eat it. Default mat_neon=0 (kept for reference).
+  - Profile of Fire1 turning (build-profile, 08 Nov 21:30): no single hotspot left; clipper ~8% (IsAABBVisible, VitaCheckPolygon,
+    CheckSurface), VM ~10%, the rest spread thin. RenderSubsystem::DrawGame's 2.3% self time is the waits in uninstrumented code.
+- STATE at 22:00 08 Nov (night work, user asleep): build/ = debug build (VITA_GAME_DEBUG ON) with everything up to #213
+  (mat_neon off), deployed to the Vita; env.txt/args.txt not on the card; SE-HP.ini bDebugMode=False. fps_lock=30 survey
+  (stand / turn fps): Intro 30.0/28.6, HogFront 30.0/29.7, Fire1 30.0/28.1, Inc_A 30.0/30.0, Sneak2 30.0/29.7, slot 3 30/30,
+  Sneak2 opening ~28. Standing views replay the BSP walk (#212); a moving camera needs the full walk (Intro picture 23-27 ms,
+  Fire1 ~22): the walk is memory bound (point cache, NEON and LTO gave nothing). For a release: bash build.sh release.
+- STATE at 13:15 08 Nov (stopped by the user): build/ = all of #179-#194, deployed to the Vita (clean, no temporary code).
+  Bench (stand / turn ms): Lev3_Intro 36.3/29.4, Lev2_HogFront 34.7/30.9, Lev2_Fire1 31.2/34.8, Lev2_Inc_A 33.3/33.0,
+  Lev4_Sneak2 33.8/31.9; all other surveyed levels well past 30 fps. hp1_chain fine (last run after #192).
+- 2026-11-11 (release prep, user: camera too slow; settings lost when the app is closed from the LiveArea):
+  - Camera: measured (bench cam_speed = HP1_MOUSE 30 counts a frame, cam_stick = the real stick pressed by vitacompanion,
+    HP1_TRACE=PotCam): 900 counts/s turned ~126 deg/s at Mouse Sensitivity 10 (the slider's top; range 0.2-10, HP1 default 3:
+    ~38 deg/s). vita_input.cpp: 2700 counts/s (render.cfg camera_speed, percent) with the response v*sqrt|v| (fine aim at small
+    tilt). cam_stick at sensitivity 10: ~380 deg/s. The chain: counts * 6 (User.ini MouseX Speed) * MouseSensitivity / (dt*150)
+    (Engine::UpdateInput) = SmoothMouseX; BaseCam.ApplyMouseXToDestYaw adds SmoothMouseX * dt * fRotSpeed: linear.
+  - Settings: the ini files reached the card only at Engine::Run's end (a killed app never gets there), and the audio device /
+    client options (menu volume 'set ini:Engine.Engine.AudioDevice SoundVolume', Brightness) reached the ini only when SE-HP.ini
+    was missing. #214 vita-cfgautosave: every 2 s the player's, audiodev's and client's SaveConfig + the debug-mode restore, and
+    when an ini changed, SaveAllIniFiles ('Settings written to the card (N ms)', ~90-140 ms: only after a change). #215
+    vita-atomicini: an .ini is written to <name>.new and renamed (remove first: the Vita's rename does not replace); vita_main.cpp
+    takes a lone .new as the ini at start. #216 SurrealEngine BUG: IniKey::SetIndexed returned 1 when the flag did NOT change, so
+    every SetValue marked the ini modified (first build wrote every 2 s = a 135 ms hitch). Worth a Flipendo engine fix too
+    (0010-engine-fixes), and the volume-not-saved part affects the PC build as well.
+    Checked (bench cfg_kill: sensitivity 7.4, SoundVolume 96, Brightness 0.6 set in play, the app killed by 'quit FLPD00001'):
+    all three in the card's SE-User.ini / SE-HP.ini, no .new left. The user's own values were put back afterwards (10, 192, 0.4).
+    MusicVolume/SoundVolume are now written as ints ('128', not '128.000000'): read back the same.
+  - User (after testing): the camera too fast at 3x -> 1350 counts/s (1.5x the old 900; ~57 / 95 / 190 deg/s at sensitivity 3 / 5 / 10).
+  - User: 'closed the window, my sensitivity was not saved'. Their next session's log: the title menu only, ini loaded 10. Checked:
+    the start does not overwrite a saved value (cfg_title: 5 stays 5). The slider (HPMenuOptionHSlider, bNoSlidingNotify) applies
+    the value only on LMouseUp -> FEOptionsPage.SensitivityChanged ('Sensitivity changed to X' in the log): a drag whose release
+    does not reach the slider changes the knob but not MouseSensitivity. Not reproduced yet: vitacompanion 'press front-touch 0 X Y'
+    did not reach the game, the stick + cross cursor is too imprecise remotely. Asked the user how they changed it.
+  - User: the front touch did nothing in the title / pause menus (SDL makes no mouse clicks from touches here), so the slider
+    could only be moved with stick + cross. vita_input.cpp TouchInMenus (render.cfg menu_touch, default 1): while the cursor is
+    not locked (a UWindow menu: Engine::TickWindow unlocks it when bShowWindowsMouse) sceTouchPeek's first finger is the cursor
+    and holds the left mouse button (counted in leftHeld with cross / R): tap = click, drag = slider drag, lift = LMouseUp (the
+    options page's sliders take their value there). In the game (locked) touch stays the spell lessons'. NOT verifiable remotely:
+    vitacompanion 'press front-touch 0 X Y' reaches neither SDL nor sceTouchPeek. The user's own change (sensitivity 8, made with
+    the 12:03 build) was found saved in SE-User.ini at the next start.
+  - build/ = RELEASE build (bash build.sh release) with #214-#216, camera 1350 and menu touch, deployed to the Vita.
+  - User: no pictures on the save slots (title menu > Start Game = FESlotPage 'SLOT'; 'load' is FELoadPage, unreachable in
+    retail, SaveGameSnap<i>.bmp that nothing writes). Cause: the card had no SGS *.bmp in hp1/Save (only the saves; the user's
+    install skipped the PC game's Save folder). The 30 BMPs (600 KB, from <game folder>/Save) copied to ux0:data/flipendo/hp1/save/:
+    pictures shown (scenario load_page). README's install list now names Save; vita_main.cpp logs 'no save slot pictures ...'
+    in vita-main.log when Save/DefaultGameSnap.bmp is missing.
+  - User: Lev_Tut3's Alohomora mirror (Mirror1 mover, opens on spellTrigger3) showed its MirrorBlur pane (WetTexture 128x128,
+    source Blur38, both on the grey Palette2; Translucent + SpecialLit BSP surface) WHITE. The animation was fine (checked by
+    temporary logs: the refraction runs, frames change). Cause: VitaRenderDevice::DrawComplexSurface gave the light map pass only
+    to opaque surfaces (a multiply pass over a translucent one would darken the room seen through it), so translucent surfaces
+    were drawn at full brightness. Now a translucent (not modulated) surface takes its light as vertex colours: the float light
+    map read bilinearly at each vertex, x2 (lightmap_scale) x exposure, clamped (MirrorBlur: 0.08, 0.08, 0.22: the dim blue
+    room). Needs the float data (never uploaded for translucent surfaces, so it is kept). User confirmed the look. Scenario
+    mirror_shots (teleport -2850 -11300 800, yaw 16384, @trigger Mirror1; the first teleport spots were inside the chest room or
+    a wall). Watch other translucent surfaces (windows, glass): they are now lit too, as in UE1.
+  - build/ = DEBUG build (bash build.sh debug, the user asked for one to check) with the above, deployed to the Vita.
+- 2026-11-11, user: players switch the debug mode and the frame cap themselves in render.cfg. debug_mode=0/1 (vita_main.cpp
+  VitaGameDebug: debug_mode, else the old game_debug, else the build's VITA_GAME_DEBUG; template and card: 0). fps_lock only 30 or
+  60, default 60 (VitaRenderDevice::LoadSettings: anything but 30 is 60; 60 = swap interval 1, i.e. vsync only). Checked:
+  dbg_mode0/1 (title menu plain / Debug + Level Select; SE-HP.ini keeps bDebugMode=False), fps30/fps60 (Lev_Tut1 stand / turn:
+  29.7 / 29.6 fps against 48.6 / 42.4). Card render.cfg: fps_lock=60 and debug_mode=0 added (it had no fps_lock line, so it ran
+  at the old default 30; backup in the session scratchpad). README.md has a Settings section for players.
+  build/ = RELEASE build with this, deployed.
+- 2026-11-11, user: the frame counter switchable in render.cfg, off by default. fps_counter=0/1/2 (VitaOverlay.cpp; the old
+  overlay= key counts only without fps_counter; default 0; the rear-touch two-finger tap still cycles it). Template and card:
+  overlay=1 replaced by fps_counter=0. Checked (fpsc0 / fpsc1 title shots): no counter / 'FPS 59.9'. build/ = RELEASE, deployed.
+- 2026-11-11, user: the left stick as the mouse in the title / pause menus and in spell lessons, the right one still working.
+  FOUND: HP1 keeps the cursor 'locked' in its menus too (CursorLocked 1 all the time: bWindowsMouseAvailable is false on the
+  Vita), so TouchInMenus never ran (that is why the menu touch 'did not work'). #217 Engine::TickWindow passes
+  Viewport.bShowWindowsMouse (the UWindow menus show their mouse) as VitaMenuMouse (vita_input.cpp); VitaTickSpellLesson sets
+  VitaWandDrawing while a lesson's Draw state runs. With either, the left stick does not walk (held arrow keys let go) and
+  moves the cursor / the wand like the right stick (the right one wins when both are pushed); menu touch now keyed to
+  VitaMenuMouse. User: the left stick moves the pause menu's cursor (checked by hand during the run). Not yet checked: the
+  spell lesson with the left stick, the menu touch with the new flag. The remote driving (drive.py polling the log by FTP
+  during a vitarun run) broke the FTP: vitacompanion's FTP takes one session at a time; do not poll while vitarun runs.
+- 2026-11-11, user: with fps_counter=0 the rear pad must not switch the counter on: VitaOverlay polls the rear touch only when
+  render.cfg's mode is 1 or 2 (bench runs force 2 for the log, rear touch stays off there as before).
+- 2026-11-11, user: the original art on the bubble and the LiveArea (images/branding/coverhq.jpg = the game's cover, 1509x1023;
+  hp.ico = the game's icon, the Snitch 32x32, 16 colours, its background a plain grey, not transparent). No Pillow/ImageMagick in
+  WSL: tools/make_livearea_cover.ps1 (Windows PowerShell, System.Drawing) renders full colour PNGs into a folder: bg 840x500 =
+  the cover cut to shape with a dark band and the watermark bottom right ('port by 31zzard' gold Georgia 22 px,
+  'https://t.me/hp1psvita' Segoe UI 16 px; the a1 style's gate sits in the middle), startup 280x158 = Harry's face, icon0 =
+  the Snitch x4 nearest-neighbour on dark blue (its grey cleared by a fill from the corners). Then
+  'python3 -I tools/make_livearea.py ~/flipendo sce_sys --from <folder>' (palette PNGs, ~4 s). Work files in build/livearea_work/.
+  Installing art needs the VPK installed (eboot deploy does not touch sce_sys). vitacompanion 'promote <dir>' with the VPK's files
+  in ux0:data/<dir>: the first call installed it silently (ur0:appmeta/FLPD00001 + ux0:app eboot new), a second call failed
+  0x80010002 (folder consumed). The bubble/LiveArea read ur0:appmeta/<TITLEID>/; ux0:app/<TITLEID>/sce_sys was refreshed by FTP too.
+  NOTE: coverhq.jpg and hp.ico are EA's art: do not commit them to the public repo (CLAUDE.md game-data rule).
+- 2026-11-11, user's own art: images/branding/GamePlayButton.jpg (1370x784, the title on Hogwarts) for the gate (startup.png,
+  a few rows cut) and icon.png (254x254, the Snitch on grey, used as is) for the bubble; the cover + watermark bg stays.
+  Installed with 'promote ux0:data/flpd_promote' (the VPK's files uploaded there): reply 'Promoted.', the folder is consumed,
+  eboot / icon0 / startup / bg in ux0:app and ur0:appmeta equal the VPK's. EA art again: do not commit those files.

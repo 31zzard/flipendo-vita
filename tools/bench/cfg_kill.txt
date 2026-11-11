@@ -1,0 +1,9 @@
+# Settings survive the app being killed (LiveArea close): sensitivity, volume, brightness changed in play, then the run
+# ends by the timeout ('quit FLPD00001' = killed, no exit). Check SE-User.ini / SE-HP.ini on the card afterwards.
+timeout=110
+stall=200
+arg=--level=Lev_Tut1
+arg=--slot=5
+env=HP1_GOD=1
+env=HP1_SKIPCUTS=1
+env=HP1_EXEC=25:@set harry0 MouseSensitivity 7.4;25.5:@console.Viewport.Actor ConsoleCommand set ini:Engine.Engine.AudioDevice SoundVolume 96;26:@console.Viewport.Actor ConsoleCommand set ini:Engine.Engine.ViewportManager Brightness 0.6

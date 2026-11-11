@@ -4,3 +4,37 @@
 11-06 12:16  11:5x #107-#109 light tree    slot0/stand 42.2 ms (23.9 fps; eng 15.3 pic 26.8)  slot0/turn 37.2 ms (27.1 fps; eng 15.6 pic 21.6)  slot1/stand 33.3 ms (30.0 fps; eng 25.1 pic 8.2)  slot1/stand2 33.4 ms (29.9 fps; eng 25.2 pic 8.2)
 11-06 12:28  12:2x #110 loop timers (new bench: fire1)  fire1/stand 52.6 ms (19.0 fps; eng 21.7 pic 30.8)  fire1/turn 59.7 ms (16.8 fps; eng 23.1 pic 36.5)  slot1/circle 42.2 ms (24.2 fps; eng 18.1 pic 23.9)  slot1/circle2 43.0 ms (23.6 fps; eng 18.5 pic 24.3)
 11-06 15:08  14:5x #111-#118 collision, shadows  fire1/stand 50.4 ms (19.8 fps; eng 20.2 pic 30.2)  fire1/turn 57.9 ms (17.4 fps; eng 21.6 pic 36.1)  slot1/circle 43.8 ms (23.4 fps; eng 19.2 pic 24.4)  slot1/circle2 42.5 ms (23.7 fps; eng 18.5 pic 23.9)
+11-07 10:42  #122-#130 water thread, entry, particles, VM (from HP2)  fire1/stand 49.4 ms (20.3 fps; eng 19.2 pic 30.1)  fire1/turn 56.7 ms (17.8 fps; eng 20.3 pic 36.2)  slot1/circle 34.2 ms (29.4 fps; eng 29.9 pic 4.2)  slot1/circle2 34.3 ms (29.3 fps; eng 29.9 pic 4.4)
+            (slot1 above is NOT the broom: HP1's Save1.usa is gone from ux0:data/flipendo/hp1/Save since 06 Nov 18:04, only Save0 is left; the run stayed in the main menu)
+11-07 15:22  #131-#145 (HP2 work: arena leak, bouncers, guard, bsp)  fire1/stand 46.5 ms (21.5 fps)  fire1/turn 54.8 ms (18.4 fps)  (slot1 not run: HP1's Save1 is gone)
+11-07 21:10  new PC (WSL1, GCC 15.2, vdpm sdl2_vitagl): same build as 20:11 + #147  fire1/stand 46.7 ms (21.5 fps)  fire1/turn 54.1 ms (18.6 fps)
+11-07 21:28  #147 log start, VitaShadows exact BonePos test, #148 log on its own thread  fire1/stand 44.8 ms (22.3 fps, worst 18)  fire1/turn 52.7 ms (19.1 fps, worst 14)
+11-07 21:35  #149 exports by name (loading)  fire1/stand 44.4 ms (22.5 fps)  fire1/turn 52.4 ms (19.2 fps)  first frame 27.3 -> 22.8 s
+11-07 21:50  #151 native ActorShadow.Tick  fire1/stand 43.7 ms (22.9 fps)  fire1/turn 51.2 ms (19.7 fps)
+11-07 22:05  probes=0 section_timers=0 (also on the card), #152 fog eye move 3% of distance, #153 fog_budget 10  fire1/stand 41.8 ms (23.9 fps)  fire1/turn 46.0 ms (21.9 fps)
+11-07 22:10  #154 mesh prepass started before the level surfaces (async)  fire1/stand 40.7 ms (24.6 fps)  fire1/turn 44.4 ms (22.7 fps)
+11-07 22:15  #155 light BeginFrame on a worker beside bsp info  fire1/stand 38.7 ms (25.9 fps)  fire1/turn 42.3 ms (23.8 fps)
+11-07 22:25  #156 decal first hit only, #157 movers-only line checks skip other actors  fire1/stand 37.5 ms (26.7 fps)  fire1/turn 41.7 ms (24.2 fps)
+11-07 22:50  #158 IsA cache in iterators, #160 ActorShadow.Update natively  fire1/stand 36.8 ms (27.1 fps)  fire1/turn 41.4 ms (24.4 fps)
+11-07 23:40  #161-#168 (box lists, jump table, native names, sky zone walk, shadows once a frame, span sort)  fire1/stand 36.2 ms (27.6 fps)  fire1/turn 40.4 ms (24.9 fps)
+11-08 00:10  #169/#170 natives without a Frame, clipper_scale=18 (card + template)  fire1/stand 34.8 ms (28.8 fps)  fire1/turn 39.0 ms (25.8 fps)
+11-08 00:45  #171 move call results, #172 face_threads_min (192 kept), #174 mesh faces in the prepass  fire1/stand 34.6 ms (28.9 fps)  fire1/turn 38.1 ms (26.4 fps); Lev2_Inc_A (spell lesson) 39.0 -> 38.4 / 37.9; Lev_Tut1 and Lev4_Sneak start: 30.0 (vsync cap)
+11-08 01:45  survey 2 (build 00:35 + #171-#174): 30.0 cap: Lev_Tut1b Lev3_Lumos Lev3_Troll Lev2_RemChase Lev5_Final; below: Lev3_Intro 43.5/38.1 ms, Lev2_HogFront 39.2/36.2, Lev4_Sneak2 36.4/35.3
+11-08 02:40  #175-#177 + material order cache (bench, event cache, light grid)  fire1 34.4/37.9; Lev3_Intro 42.4/37.7 (was 43.5/38.1); Lev2_HogFront 39.0/35.9 (39.2/36.2); Lev2_Inc_A 37.9/37.5 (39.0/38.7 at 00:20)
+11-08 03:05  #178 frame light list reused, skin store by swap  Lev3_Intro 41.5/37.2
+11-08 03:15  same build  fire1/stand 33.8 ms (29.6 fps)  fire1/turn 37.1 ms (27.2 fps); hp1_chain ok (heap 111/130/141)
+11-08 05:10  #180 hash cells as vectors, #181 decal trace chain lists (110 -> 25 us a trace)  Lev3_Intro 40.7/36.8 (was 41.5/37.2); Lev2_HogFront 37.9/35.4 (39.0/35.9); fire1/stand 33.3 ms (30.0 fps, cap) fire1/turn 37.0 ms (27.0 fps)
+11-08 05:55  #182 no engine light list for KW skeletal meshes, #184 frame-limit mod off on the Vita  Lev3_Intro 40.2/33.0 (was 40.7/36.8); Lev2_HogFront 37.5/33.4 (37.9/35.4); fire1 33.0/36.7
+11-08 06:35  #185 prepass faces as device batch floats (memcpy at draw)  Lev2_Inc_A 36.1/35.8 (37.0/36.6); Lev3_Intro 39.1/31.9 (40.2/33.0); Lev2_HogFront 36.7/32.7 (37.5/33.4)
+11-08 07:30  #186 streamed prepass (jobs published one by one), #187 faces job: wedge maps, no fog, no GouraudVertex, no worker allocations; vertex light setup dropped  Lev2_Inc_A 35.4/35.0; Lev3_Intro 38.0/31.3; Lev2_HogFront 35.9/32.0; fire1 31.8/35.9
+11-08 08:15  #188 old-faces counts, #189 faces-only prepass jobs for skin cache hits  Lev2_Inc_A 34.7/34.3; Lev3_Intro 37.9/31.3; Lev2_HogFront 35.8/31.7; fire1 31.7/35.7; Lev4_Sneak2 35.0/32.9
+11-08 08:50  #190 clipper: a polygon whose screen box meets no open gap answered hidden early (clip_check: 160000, 0 wrong)  Lev3_Intro 37.8/31.0; Lev2_HogFront 35.3/31.4; fire1 31.9/35.6
+11-08 09:30  #191 level line check table  Lev3_Intro 37.4/30.2; Lev2_HogFront 35.3/31.3; fire1 31.6/35.3; Lev2_Inc_A 33.9/33.6; Lev4_Sneak2 34.0/32.1
+11-08 10:05  #192 AllActors by a per-class slot index (GRI.Timer 882 -> 687 us)  Lev3_Intro 36.7/29.5; fire1 31.5/35.2
+11-08 11:00  #193 GameReplicationInfo.Timer natively (gri_timer_check: 1000 compared, 0 differ)  Lev2_HogFront 35.2/31.4; Lev3_Intro 36.5/29.9; fire1 31.4/35.3
+11-08 12:15  survey 3 (build of 11:00, #180-#193), stand / turn ms (fps): Lev_Tut1 26.6/24.6 (37.5/41.2), Lev_Tut1b 27.0/25.3, Lev2_Inc_A 33.7/33.3, Lev2_HogFront 35.2/31.4, Lev2_RemChase 16.7/18.9, Lev3_Intro 36.6/29.4, Lev3_Lumos 24.5/23.7, Lev3_Troll 26.5/23.7, Lev4_Sneak 26.0/23.6, Lev4_Sneak2 33.8/31.9, Lev5_Final 23.0/19.6, fire1 31.4/35.2. No FATAL.
+             (the light levels are past 30 fps now: the 30.0 'cap' of earlier surveys came with the frame-limit mod, off since #184)
+11-08 12:45  #194 VM scalar copies (4 bytes, not 48), frame limit off only with vsync  Lev3_Intro 36.3/29.4; Lev2_HogFront 34.7/30.9; fire1 31.2/34.8; Lev2_Inc_A 33.3/33.0  (GRI.Timer in the VM 687 -> 652 us)
+11-08 13:15  stopped (user). Open: shadows of walking actors blink (see vita/CLAUDE.md, OPEN BUG 08 Nov).
+
+2026-11-08 20:30 fps_lock=30 debug build (#195-#210b): Intro 28.0/28.8 fps, HogFront 29.1/29.9, Fire1 30.0/28.3, Inc_A 29.9/30.0, Sneak2 29.8/30.0, slot3 30/30

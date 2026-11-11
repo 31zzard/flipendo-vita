@@ -1,0 +1,3 @@
+# Title menu only, then killed by the timeout: does the start overwrite SE-User.ini / SE-HP.ini?
+timeout=50
+stall=200

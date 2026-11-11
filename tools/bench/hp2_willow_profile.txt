@@ -1,0 +1,7 @@
+# The profiling build (slow on purpose) in Adv1Willow (Slot5 copy of the player's save): standing until 200 s; profile.txt every 25 s
+timeout=900
+stall=150
+arg=--saveslot=5
+arg=--loadgame=0
+env=HP1_KEYS=30:Enter:0.2
+env=HP1_EXEC=200:exit

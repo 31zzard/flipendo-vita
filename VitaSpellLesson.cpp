@@ -277,9 +277,12 @@ namespace
 	}
 }
 
+extern bool VitaWandDrawing;   // vita_input.cpp: the sticks move the wand (the mouse) while a lesson's Draw state runs
+
 // Called by HP1::TickMods every frame (apply_fixes.sh #81)
 void VitaTickSpellLesson()
 {
+	VitaWandDrawing = TickCount - DrawTickFrame <= 1 && DrawTickFrame != 0;
 	if (!TouchOn() && !AssistOn() && TimePercent() == 100.0f)
 		return;
 	UClass* cls = engine->packages->FindClass("HPBase.SpellLearnTrigger");

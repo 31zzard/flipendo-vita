@@ -1,0 +1,8 @@
+# UWindow / Canvas scripts called most in the menus
+timeout=150
+stall=40
+arg=--level=Lev_Tut1
+arg=--slot=5
+env=HP1_GOD=1
+env=HP1_SKIPCUTS=1
+env=HP1_EXEC=30:@script Engine.Canvas SetPos;30:@script Engine.Canvas SetOrigin;30:@script Engine.Canvas SetClip;30:@script UWindow.UWindowWindow WindowEvent;30:@script UWindow.UWindowWindow PaintClients;30:@script UWindow.UWindowWindow DoTick;30:@script UWindow.UWindowWindow BeforePaint;30:@script UWindow.UWindowWindow AfterPaint;30:@script UWindow.UWindowWindow Tick;30:@script UWindow.UWindowSmallButton TextSize;30:@script UWindow.UWindowButton DrawClippedTexture;30:@script UWindow.UWindowWindow DrawClippedTexture;30:@script UWindow.UWindowWindow DrawStretchedTextureSegment;30:@script UWindow.UWindowWindow DrawStretchedTexture;30:@script UWindow.UWindowWindow ParentWindow;32:exit

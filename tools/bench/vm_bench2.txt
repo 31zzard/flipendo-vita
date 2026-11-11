@@ -1,0 +1,8 @@
+# Script call costs (@bench) in Lev2_HogFront
+timeout=200
+stall=50
+arg=--level=Lev2_HogFront
+arg=--slot=5
+env=HP1_GOD=1
+env=HP1_SKIPCUTS=1
+env=HP1_EXEC=50:@bench Harry Vec 5000;52:@bench VenomousTent2 CheckForHarryHit 2000;54:@bench VenomousTent2 impartInformation 5000;56:@bench Harry Vec 5000;58:exit

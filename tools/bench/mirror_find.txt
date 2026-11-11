@@ -1,0 +1,10 @@
+# Lev_Tut3: where the Alohomora mirror (Mirror1 mover) is
+timeout=120
+stall=200
+arg=--level=Lev_Tut3
+arg=--slot=5
+env=VITA_BENCH=1
+env=HP1_GOD=1
+env=HP1_SKIPCUTS=1
+env=HP1_DUMP=20
+env=HP1_EXEC=25:exit

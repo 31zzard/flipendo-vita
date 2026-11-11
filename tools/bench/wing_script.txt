@@ -1,0 +1,8 @@
+# WingardiumBlock's scripts and where the blocks are (Lev2_HogFront)
+timeout=200
+stall=50
+arg=--level=Lev2_HogFront
+arg=--slot=5
+env=HP1_GOD=1
+env=HP1_SKIPCUTS=1
+env=HP1_EXEC=50:@script WingardiumBlock Tick;50:@script WingardiumBlock BeginState;50:@script WingardiumBlock OnLevitate;50:@script spellWingardium Tick;50:@get WingardiumBlock Location;50:@get harry0 Location;50:@get harry0 Rotation;52:exit

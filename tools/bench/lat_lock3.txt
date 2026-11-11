@@ -1,0 +1,11 @@
+# input latency check (lock3)
+timeout=200
+stall=50
+arg=--level=Lev_Tut1
+arg=--slot=5
+env=VITA_BENCH=1
+env=RCFG_fps_lock=30
+env=RCFG_display_buffers=3
+env=HP1_GOD=1
+env=HP1_SKIPCUTS=1
+env=HP1_EXEC=50:@get harry0 Location;80:exit

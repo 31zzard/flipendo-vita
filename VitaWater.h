@@ -9,6 +9,7 @@
 
 #include <cstdint>
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <unordered_map>
 #include <vector>
@@ -155,8 +156,18 @@ namespace VitaWater
 	};
 	inline std::unordered_map<const void*, State> states;   // by texture (engine thread only)
 
+	// The texture the water thread works on now (VitaWaterJobs.h), its state and the picture it writes into: StateFor and the
+	// UpdateFrame patches look here first. Set only by the water thread; nullptr when it is idle.
+	inline std::atomic<const void*> jobTexture{ nullptr };
+	inline State* jobState = nullptr;
+	inline uint8_t* jobPixels = nullptr;
+	inline bool OnJob(const void* texture) { return texture && jobTexture.load(std::memory_order_acquire) == texture; }
+	inline uint8_t* Output(const void* texture, uint8_t* pixels) { return OnJob(texture) ? jobPixels : pixels; }
+
 	inline State& StateFor(const void* texture, int width, int height)
 	{
+		if (OnJob(texture))
+			return *jobState;
 		State& s = states[texture];
 		if (s.width != width || s.height != height)
 		{
@@ -294,13 +305,46 @@ namespace VitaWater
 			const float* up = old + (size_t)(y - 1 >= 0 ? y - 1 : height - 1) * width;
 			const float* down = old + (size_t)(y + 1 < height ? y + 1 : 0) * width;
 			uint8_t* destline = dst + (size_t)y * width;
-			for (int x = 0; x < width; x++)
+			auto one = [&](int x)
 			{
 				const float gx = (row[x + 1 < width ? x + 1 : 0] - row[x - 1 >= 0 ? x - 1 : width - 1]) * 0.5f;
 				const float gy = (down[x] - up[x]) * 0.5f;
 				const float ny = 0.2f / std::sqrt(gx * gx + 0.04f + gy * gy);
 				destline[x] = (uint8_t)std::clamp(ny * 255.0f + 128.0f, 0.0f, 255.0f);
+			};
+			int x = 0;
+#ifdef VITA_WATER_NEON
+			// 8 pixels at a time; 1/sqrt by vrsqrte + two Newton steps (relative error ~1e-6: the byte differs from the scalar
+			// one only when ny * 255 + 128 lands within that of a whole number). #123: the scalar sqrt + divide was ~half of
+			// WaterDE2's 19 ms a picture.
+			if (width >= 10)
+			{
+				one(0);
+				x = 1;
+				const float32x4_t vhalf = vdupq_n_f32(0.5f), c004 = vdupq_n_f32(0.04f), c02 = vdupq_n_f32(0.2f);
+				const float32x4_t c255 = vdupq_n_f32(255.0f), c128 = vdupq_n_f32(128.0f), zero = vdupq_n_f32(0.0f);
+				for (; x + 8 <= width - 1; x += 8)
+				{
+					uint16x4_t half16[2];
+					for (int k = 0; k < 2; k++)
+					{
+						const int xx = x + k * 4;
+						const float32x4_t gx = vmulq_f32(vsubq_f32(vld1q_f32(row + xx + 1), vld1q_f32(row + xx - 1)), vhalf);
+						const float32x4_t gy = vmulq_f32(vsubq_f32(vld1q_f32(down + xx), vld1q_f32(up + xx)), vhalf);
+						const float32x4_t d = vaddq_f32(vaddq_f32(vmulq_f32(gx, gx), c004), vmulq_f32(gy, gy));
+						float32x4_t r = vrsqrteq_f32(d);
+						r = vmulq_f32(r, vrsqrtsq_f32(vmulq_f32(d, r), r));
+						r = vmulq_f32(r, vrsqrtsq_f32(vmulq_f32(d, r), r));
+						float32x4_t v = vaddq_f32(vmulq_f32(vmulq_f32(c02, r), c255), c128);
+						v = vminq_f32(vmaxq_f32(v, zero), c255);
+						half16[k] = vmovn_u32(vcvtq_u32_f32(v));
+					}
+					vst1_u8(destline + x, vmovn_u16(vcombine_u16(half16[0], half16[1])));
+				}
 			}
+#endif
+			for (; x < width; x++)
+				one(x);
 		}
 	}
 

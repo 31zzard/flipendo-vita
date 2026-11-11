@@ -1,0 +1,13 @@
+# Lev_Tut1: standing, then aiming (left mouse held 6 s) and casting (release), twice; probes, ticks by class, script profile
+timeout=220
+stall=40
+arg=--level=Lev_Tut1
+arg=--slot=5
+env=VITA_BENCH=1
+env=RCFG_probes=1
+env=RCFG_script_profile=1
+env=RCFG_section_timers=1
+env=HP1_GOD=1
+env=HP1_SKIPCUTS=1
+env=HP1_KEYS=40:01:6,58:01:6
+env=HP1_EXEC=30:@get harry0 Location;40:@get harry0 Rotation;46:@get harry0 Health;52:@get harry0 Location;58:@get harry0 Rotation;64:@get harry0 Health;72:exit

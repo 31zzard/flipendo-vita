@@ -1,0 +1,15 @@
+# Chamber of Secrets: Grandstaircase_hub, the big open hall with stairs and floors (user's choice, 07 Nov). A new game in slot 6
+# on PrivetDr (small), story state GSTATE050 set on Harry, then '@travel Grandstaircase_hub' (the hub's actors screened by that
+# state; a --url start of the hub itself starts every chapter's cutscenes and runs out of memory). Enter skips the level-start
+# cutscene; 4 s walking out of the corridor (user: 'walk forward ~4 s'); 15 s standing, 15 s turning the camera, 10 s turning
+# while looking up, quit.
+timeout=420
+stall=150
+arg=--saveslot=6
+arg=--url=PrivetDr.unr
+env=VITA_BENCH=1
+env=HP1_SHOT_DIR=ux0:data/flipendo2
+env=HP1_SHOTS=57,64,86,100
+env=HP1_KEYS=46:Enter:0.2,50:Enter:0.2,54:Enter:0.2,58:Up:4
+env=HP1_MOUSE=78:25:0:15,93:20:-6:10
+env=HP1_EXEC=3:@set Harry CurrentGameState GSTATE050;4:@travel Grandstaircase_hub;63:@get Harry1 Location;78:@get Harry1 Rotation;93:@get Harry1 ViewRotation;103:@memory;104:exit

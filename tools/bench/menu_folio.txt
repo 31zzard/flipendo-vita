@@ -1,0 +1,12 @@
+# Lev_Tut1: the folio page (wizard cards) for 50 s, with probes and the script profile
+timeout=200
+stall=40
+arg=--level=Lev_Tut1
+arg=--slot=5
+env=VITA_BENCH=1
+env=RCFG_probes=1
+env=RCFG_script_profile=1
+env=RCFG_section_timers=1
+env=HP1_GOD=1
+env=HP1_SKIPCUTS=1
+env=HP1_EXEC=30:@console.MenuBook OpenBook FOLIO;82:exit
